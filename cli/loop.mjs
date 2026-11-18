@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * CLI front-end — the same engine, driven from a terminal.
  *

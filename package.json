@@ -32,6 +32,9 @@
     "gui",
     "dist",
     "docs",
+    "examples",
+    "scripts",
+    "userscript",
     "README.md",
     "LICENSE"
   ],
