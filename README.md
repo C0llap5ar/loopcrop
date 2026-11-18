@@ -63,8 +63,8 @@ The first run asks your browser to allow multiple downloads. That prompt is a br
 ## Quick start — CLI
 
 ```bash
-# not on npm yet
-git clone https://github.com/C0llap5ar/loopcrop && cd loopcrop && node cli/loop.mjs --help
+npm install -g loopcrop     # or: npx loopcrop --help
+loopcrop --help
 ```
 
 The CLI does not launch a browser. It attaches to one you already have open, through an extension bridge exposing:
