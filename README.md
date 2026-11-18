@@ -38,6 +38,8 @@ Long-running generation tasks — serialized fiction, batch translation, dataset
 | knows when a turn ended | guesses from the DOM | reads the site's own message status |
 | collects the output | ❌ | ✅ resolves signed URLs, saves real bytes |
 | survives a page reload | ❌ | ✅ manifest dedupes by file id |
+| survives a process crash | ❌ | ✅ journal replays completed turns without re-sending |
+| remembers the replies | ❌ | ✅ journal keeps full text + blocks + files |
 | stops on a condition | count only | markers, patterns, dry streaks, wall clock |
 | pacing / rate limits | fixed sleep | jittered backoff with error budgets |
 
@@ -87,7 +89,14 @@ loopcrop --adopt --out ./chapters
 # run the fiction preset
 loopcrop --recipe novel --out ./chapters --turns 20
 
-# resume: rerun the same command, the manifest skips what is already on disk
+# resume: rerun the same command; completed asks replay from the journal, never re-send
+```
+
+Every CLI run also writes an append-only journal at `.loopcrop/journal/<recipe-name>.jsonl`
+inside the output directory. Each completed ask records its prompt, duration, full reply
+text, content blocks and saved files. On restart, completed sequence numbers are replayed
+locally; only unfinished asks are sent. The journal is the progress truth, while the
+manifest remains the artifact index.
 ```
 
 ## Quick start — GUI
@@ -150,7 +159,8 @@ An adapter is four methods. It runs inside the page, so it inherits the session 
   probe()                // -> { ok, site, conversationId, url, title }
   send(text)             // -> { ok }        put text in the composer and submit
   status({ sinceId })    // -> { phase: "idle" | "running" | "stalled", lastMessageId, tail, ... }
-  harvest({ messageId }) // -> [{ id, name, mime, bytes, messageId, source }]
+  harvest({ messageId }) // -> { text, blocks, artifacts: [{ id, name, mime, bytes, messageId, source }] }
+                         // a bare artifact array is still accepted for compatibility
 }
 ```
 
@@ -167,6 +177,8 @@ Two rules that are not obvious:
 core/
   protocol.js        adapter contract + normalization
   engine.js          the loop — the only file that knows the order of things
+  journal.js         append-only ask history + full replies (Node)
+  session.js         idempotent ask() / replayable clock, injected by front-ends
   stops.js           stop conditions as pure predicates
   manifest.js        crash-safe run state (Node)
   sinks.js           browser sinks (download, memory)
@@ -186,9 +198,12 @@ The build step is a ~90-line dependency-free ESM inliner rather than a bundler, 
 
 ## Verification
 
-`npm test` runs 26 unit tests with a fake adapter and a fake transport — fast, and
-they pin the parts that are easy to get subtly wrong: turn accounting, dedupe,
-atomic manifest writes, base64 byte handling, stop conditions.
+`npm test` runs 37 unit tests with fake adapters, journals and a fake transport — fast,
+and they pin the parts that are easy to get subtly wrong: turn accounting, dedupe,
+atomic manifest writes, base64 byte handling, stop conditions, journal persistence and
+idempotent replay. The 100-ask crash test aborts mid-run, reopens the journal, finishes
+the run and asserts every prompt was sent exactly once; a lost manifest is rebuilt from
+journal records without re-saving existing files.
 
 The live smoke check lives in `live/`, outside the test runner's discovery glob,
 because it spends real quota against a real browser and must never run in CI.
@@ -219,7 +234,7 @@ click that misses leaves the text in place — and retrying then sends it twice.
 - **Site changes break adapters.** ChatGPT's DOM and private endpoints are not a public API. When they move, `core/adapters/chatgpt.js` needs fixing — nothing else does.
 - **The userscript cannot write arbitrary paths.** Browsers route downloads through the download manager, so the folder is whatever the browser chooses plus the configured subdirectory. Use the CLI when the exact path matters.
 - **Multiple-download prompts are unavoidable** in the browser build.
-- **Quota is yours.** This spends your subscription exactly as if you typed the prompts. It adds no retry budget beyond what the stop conditions let you configure.
+- **Quota is yours.** This spends your subscription exactly as if you typed the prompts. It adds no retry budget beyond what the stop conditions let you configure. If harvesting fails after a successful send, that turn is still journaled, so restarting will not spend the same prompt again.
 
 ## License
 

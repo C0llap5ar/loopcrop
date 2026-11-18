@@ -76,7 +76,7 @@ const bundle = `${meta.trim()}
 (function () {
   'use strict';
 
-${body.replace(/^/gm, '  ')}
+${body.replace(/^/gm, '  ').replace(/^[ \t]+$/gm, '')}
 
   // ── bootstrap ─────────────────────────────────────────────────────────────
   if (document.readyState === 'loading') {

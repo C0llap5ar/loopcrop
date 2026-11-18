@@ -18,13 +18,16 @@
 
 import { runLoop } from '../core/engine.js';
 import { createChatGptAdapter } from '../core/adapters/chatgpt.js';
-import { normalizeArtifacts } from '../core/protocol.js';
+import { normalizeHarvest } from '../core/protocol.js';
 import { createFsSink } from '../core/sinks-node.js';
 import { resolveRecipe } from '../core/recipes/index.js';
 import { ManifestStore } from '../core/manifest.js';
+import { Journal } from '../core/journal.js';
+import { createSession } from '../core/session.js';
 import { createLogger } from './logger.mjs';
 import { parseArgs } from './args.mjs';
 import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 
 const DEFAULT_BRIDGE = { host: '127.0.0.1', port: 17318 };
 
@@ -68,8 +71,7 @@ export async function main(argv) {
     if (args.dryRun || args.adopt) {
       const st = await adapter.status({});
       logger.info(`phase=${st.phase} · last=${st.lastMessageId ?? 'none'} · model=${st.model ?? '?'}`);
-      const raw = await adapter.harvest({ messageId: st.lastMessageId });
-      const artifacts = normalizeArtifacts(raw);
+      const { artifacts } = normalizeHarvest(await adapter.harvest({ messageId: st.lastMessageId }));
       logger.info(`found ${artifacts.length} artifact(s) in the current turn`);
 
       if (args.dryRun) {
@@ -101,11 +103,21 @@ export async function main(argv) {
     process.on('SIGINT', onSig);
     process.on('SIGTERM', onSig);
 
+    // The journal makes a crashed run resumable without re-sending prompts. It lives
+    // under `.loopcrop/journal/<recipe.name>.jsonl`, keyed by the recipe so a change
+    // of recipe starts a fresh history instead of mis-replaying another one's turns.
+    const journal = await Journal.open({
+      dir: join(outDir, '.loopcrop', 'journal'),
+      workId: recipe.name ?? 'run',
+    });
+    const session = createSession({ journal });
+
     const result = await runLoop({
       adapter,
       sink: createFsSink({ dir: outDir, logger }),
       recipe,
       manifest,
+      session,
       logger,
       signal: ac.signal,
       maxTurns: args.turns ?? 200,

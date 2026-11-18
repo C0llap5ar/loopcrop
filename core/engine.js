@@ -17,10 +17,18 @@
  *
  *   bootstrap:  harvest what already exists (deduped by manifest)
  *   loop n:     prompt(n) -> send -> wait for settle -> harvest -> stop? -> pace
+ *
+ * Since 0.2.0 the loop also drives a *session* (see core/session.js). When a real
+ * journal-backed session is supplied, each turn is idempotent by its seq: a restart
+ * replays recorded turns instead of re-sending their prompts. When no session is
+ * supplied (userscript path), the engine behaves exactly as it always did — it asks
+ * every time. The session is injected, never imported, so `node:fs`-backed journals
+ * never leak into the browser bundle.
  */
 
-import { normalizeStatus, normalizeArtifacts } from './protocol.js';
+import { normalizeStatus, normalizeHarvest } from './protocol.js';
 import { evaluateStop } from './stops.js';
+import { createSession } from './session.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -31,6 +39,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @param {object} opts.recipe       { name, prompt(turn, state), stop }
  * @param {object} [opts.pacing]     { pollMs, settleMs, betweenTurnsMs, jitterMs, stallMs }
  * @param {object} [opts.manifest]   ManifestStore (or a compatible stub)
+ * @param {object} [opts.session]    Session (see core/session.js); defaults to ask-always
  * @param {object} [opts.logger]
  * @param {AbortSignal} [opts.signal]
  * @param {number} [opts.maxTurns]   hard ceiling, independent of recipe.stop
@@ -41,6 +50,7 @@ export async function runLoop({
   recipe,
   pacing = {},
   manifest,
+  session,
   logger = console,
   signal,
   maxTurns = 200,
@@ -55,10 +65,21 @@ export async function runLoop({
     ...pacing,
   };
 
+  // The session is the ask gate. A null-journal session still asks every time, so
+  // the userscript path is byte-for-byte the old behavior.
+  session ??= createSession();
+  const now = session.now.bind(session);
+
   const startedAt = Date.now();
+  // Resuming starts from the manifest's position. The *journal* does not advance
+  // this counter directly — instead the loop replays every recorded seq through
+  // session.ask(), which returns the cached result without re-sending. That replay
+  // is what re-syncs a manifest that fell behind the journal in a kill-window, and
+  // it is O(1) per turn because a cached hit never touches the page.
   let turnsCompleted = manifest?.turnsCompleted ?? 0;
   let sendErrors = 0;
   let harvestErrors = 0;
+  let lastHarvestError = null;
   let turnsWithoutArtifacts = 0;
   let artifactsThisRun = 0;
   let lastMessageId = manifest?.lastMessageId ?? null;
@@ -85,8 +106,15 @@ export async function runLoop({
     const st = normalizeStatus(await waitForIdle({ adapter, pacing: p, signal }));
     lastTail = st.tail;
     lastMessageId = st.lastMessageId ?? lastMessageId;
-    if (st.lastMessageId) {
-      const adopted = await harvestInto({ adapter, sink, manifest, logger, messageId: st.lastMessageId, savedThisRun });
+    // Adopt only a turn the journal does *not* already cover. When the journal is
+    // intact (e.g. the manifest was lost but the journal survived), the latest
+    // message is already fully recorded and re-adopting it would re-save a file that
+    // is already on disk — a duplicate. When the journal is empty (first run, or
+    // userscript with no journal), adopt proceeds as it always has.
+    const latest = session.get(session.maxSeq());
+    const alreadyRecorded = latest && latest.messageId && latest.messageId === st.lastMessageId;
+    if (st.lastMessageId && !alreadyRecorded) {
+      const adopted = await adoptExisting({ adapter, sink, manifest, logger, messageId: st.lastMessageId });
       if (adopted.saved > 0) logger.info?.(`bootstrap: adopted ${adopted.saved} existing file(s)`);
     }
   } catch (err) {
@@ -96,71 +124,60 @@ export async function runLoop({
   for (let n = turnsCompleted + 1; n <= maxTurns; n++) {
     if (aborted()) return finish('aborted', 'abort signal');
 
-    // ── 1. send ───────────────────────────────────────────────────────────────
+    // ── 0. prompt ─────────────────────────────────────────────────────────────
     const prompt = typeof recipe.prompt === 'function'
       ? recipe.prompt(n, state())
       : String(recipe.prompt ?? 'continue');
 
+    // ── 1. the turn, idempotent by seq ────────────────────────────────────────
+    let event;
+    let replayed;
     try {
-      // Never send into a page that is still producing; that is how two prompts
-      // end up merged into one turn.
-      await waitForIdle({ adapter, pacing: p, signal });
-      await adapter.send(prompt);
-      sendErrors = 0;
-      logger.info?.(`turn ${n}: sent — ${preview(prompt)}`);
+      ({ event, replayed } = await session.ask(n, prompt, () => performTurn(n, prompt)));
     } catch (err) {
       if (aborted()) return finish('aborted', 'abort signal');
+      // Only send/settle failures propagate here (harvest failures are absorbed
+      // inside performTurn and recorded, so a restart never re-sends them).
       sendErrors += 1;
-      logger.warn?.(`turn ${n}: send failed — ${err.message}`);
+      logger.warn?.(`turn ${n}: ${err.message}`);
       if (sendErrors >= p.maxConsecutiveErrors) return finish('error', `send failed ${sendErrors}x: ${err.message}`);
       await sleep(p.betweenTurnsMs * 2);
       n -= 1;                                  // retry this turn number
       continue;
     }
 
-    // ── 2. wait for the turn to settle ────────────────────────────────────────
-    let st;
-    try {
-      st = normalizeStatus(await waitForIdle({ adapter, pacing: p, signal, logger }));
-    } catch (err) {
-      sendErrors += 1;
-      logger.warn?.(`turn ${n}: never settled — ${err.message}`);
-      if (sendErrors >= p.maxConsecutiveErrors) return finish('error', err.message);
-      n -= 1;
-      continue;
-    }
-    lastTail = st.tail;
-
-    // ── 3. harvest ────────────────────────────────────────────────────────────
-    try {
-      const res = await harvestInto({
-        adapter, sink, manifest, logger, messageId: st.lastMessageId, savedThisRun,
-      });
-      artifactsThisRun += res.saved;
-      turnsWithoutArtifacts = res.saved > 0 ? 0 : turnsWithoutArtifacts + 1;
-      harvestErrors = 0;
-      logger.turn?.(n, { status: st, saved: res.saved, artifacts: res.found });
-    } catch (err) {
-      harvestErrors += 1;
-      logger.warn?.(`turn ${n}: harvest failed — ${err.message}`);
-      if (harvestErrors >= p.maxConsecutiveErrors) {
-        return finish('error', `harvest failed ${harvestErrors}x: ${err.message}`);
+    // ── 2. reconcile + bookkeeping (runs for fresh *and* replayed turns) ─────
+    if (replayed) {
+      // The kill-window between journal.append and manifest.save could leave the
+      // manifest unaware of files that are already on disk. Re-sync it without
+      // re-saving: the bytes are already where event.files says they are.
+      for (const f of event.files ?? []) {
+        if (f.id && !manifest?.has(f.id)) {
+          manifest?.record({ id: f.id, name: f.name, path: f.path, bytes: f.bytes });
+        }
       }
+      logger.info?.(`turn ${n}: replayed from journal (${preview(prompt)})`);
     }
 
-    // ── 4. bookkeeping ────────────────────────────────────────────────────────
-    lastMessageId = st.lastMessageId ?? lastMessageId;
+    lastMessageId = event.messageId ?? lastMessageId;
+    lastTail = typeof event.tail === 'string' && event.tail
+      ? event.tail
+      : (typeof event.text === 'string' ? event.text.slice(-200) : '');
     turnsCompleted = n;
     manifest?.noteTurn({ lastMessageId });
     await manifest?.saveIfDirty();
 
-    // ── 5. stop conditions ────────────────────────────────────────────────────
+    if (harvestErrors >= p.maxConsecutiveErrors) {
+      return finish('error', `harvest failed ${harvestErrors}x: ${lastHarvestError ?? ''}`);
+    }
+
+    // ── 3. stop conditions ────────────────────────────────────────────────────
     const stop = evaluateStop(recipe.stop, state());
     if (stop.stop) return finish('stopped', stop.reason, stop.code);
 
     if (aborted()) return finish('aborted', 'abort signal');
 
-    // ── 6. pacing ─────────────────────────────────────────────────────────────
+    // ── 4. pacing ─────────────────────────────────────────────────────────────
     const delay = p.betweenTurnsMs + Math.floor(Math.random() * p.jitterMs);
     logger.info?.(`  waiting ${(delay / 1000).toFixed(1)}s`);
     await sleep(delay);
@@ -170,16 +187,71 @@ export async function runLoop({
 
   // ── helpers ─────────────────────────────────────────────────────────────────
 
-  async function harvestInto({ adapter: a, sink: s, manifest: m, logger: lg, messageId, savedThisRun: acc }) {
-    const raw = await a.harvest({ messageId });
-    const artifacts = normalizeArtifacts(raw);
+  /**
+   * Do one real turn: send, settle, harvest, persist. Returns the fields the
+   * session records. Throws on send/settle failure (the caller retries the seq);
+   * absorbs harvest failure (records text-less, files-less) so a restart skips
+   * the turn instead of re-spending quota on it.
+   */
+  async function performTurn(n, prompt) {
+    // Never send into a page that is still producing; that is how two prompts
+    // end up merged into one turn.
+    await waitForIdle({ adapter, pacing: p, signal });
+    const sendStartedAt = now();
+    await adapter.send(prompt);
+    sendErrors = 0;
+    logger.info?.(`turn ${n}: sent — ${preview(prompt)}`);
+
+    const st = normalizeStatus(await waitForIdle({ adapter, pacing: p, signal, logger }));
+    lastTail = st.tail;
+
+    let text = '';
+    let blocks = [];
+    let artifacts = [];
+    let saved = 0;
+    const files = [];
+    try {
+      ({ text, blocks, artifacts } = normalizeHarvest(await adapter.harvest({ messageId: st.lastMessageId })));
+      for (const art of artifacts) {
+        if (manifest?.has(art.id)) continue;
+        const res = await sink.save(art);
+        manifest?.record({ ...art, path: res.path, bytes: res.bytes });
+        saved += 1;
+        files.push({ id: art.id, name: art.name, path: res.path, bytes: res.bytes });
+        savedThisRun.push({ name: art.name, path: res.path, bytes: res.bytes });
+        logger.info?.(`  saved ${art.name} (${res.bytes} B) -> ${res.path}`);
+      }
+      harvestErrors = 0;
+    } catch (err) {
+      harvestErrors += 1;
+      lastHarvestError = err.message;
+      logger.warn?.(`turn ${n}: harvest failed — ${err.message}`);
+    }
+    artifactsThisRun += saved;
+    turnsWithoutArtifacts = saved > 0 ? 0 : turnsWithoutArtifacts + 1;
+    logger.turn?.(n, { status: st, saved, artifacts: artifacts.length });
+
+    return {
+      messageId: st.lastMessageId ?? null,
+      dur: now() - sendStartedAt,
+      tail: st.tail,
+      text,
+      blocks,
+      files,
+      artifacts: artifacts.length,
+      saved,
+    };
+  }
+
+  /** Adopt a turn that already finished before we started (no send, no journal). */
+  async function adoptExisting({ adapter: a, sink: s, manifest: m, logger: lg, messageId }) {
+    const { artifacts } = normalizeHarvest(await a.harvest({ messageId }));
     let saved = 0;
     for (const art of artifacts) {
       if (m?.has(art.id)) continue;
       const res = await s.save(art);
       m?.record({ ...art, path: res.path, bytes: res.bytes });
       saved += 1;
-      acc.push({ name: art.name, path: res.path, bytes: res.bytes });
       lg.info?.(`  saved ${art.name} (${res.bytes} B) -> ${res.path}`);
     }
     return { found: artifacts.length, saved };

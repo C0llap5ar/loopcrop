@@ -129,6 +129,25 @@ export function normalizeArtifacts(raw) {
   return out;
 }
 
+/**
+ * Normalize whatever an adapter's `harvest` returned into the three things the
+ * engine now persists: the full reply text, its structural blocks, and the
+ * artifacts.
+ *
+ * Backward compatible: an adapter that still returns a bare `Artifact[]` is treated
+ * as "no text, no blocks". A newer adapter returns `{ text, blocks, artifacts }`.
+ */
+export function normalizeHarvest(raw) {
+  if (Array.isArray(raw)) {
+    return { text: '', blocks: [], artifacts: normalizeArtifacts(raw) };
+  }
+  return {
+    text: typeof raw?.text === 'string' ? raw.text : '',
+    blocks: Array.isArray(raw?.blocks) ? raw.blocks : [],
+    artifacts: normalizeArtifacts(raw?.artifacts),
+  };
+}
+
 export function base64ToBytes(b64) {
   try {
     if (typeof atob === 'function') {

@@ -79,7 +79,7 @@
   const PROTOCOL_VERSION = 1;
   const REQUIRED_METHODS = Object.freeze(['probe', 'send', 'status', 'harvest']);
   const PHASES = Object.freeze(['idle', 'running', 'stalled']);
-  
+
   /** Validate an adapter before the engine trusts it with a conversation. */
   function validateAdapter(adapter) {
     const problems = [];
@@ -96,7 +96,7 @@
     }
     return { ok: problems.length === 0, problems };
   }
-  
+
   /** Normalize whatever an adapter returned into a TurnStatus the engine can act on. */
   function normalizeStatus(raw) {
     const phase = PHASES.includes(raw?.phase) ? raw.phase : 'idle';
@@ -110,7 +110,7 @@
       error: raw?.error,
     };
   }
-  
+
   /**
    * Turn an adapter's harvest output into artifacts the sink can persist,
    * dropping anything malformed instead of crashing mid-run.
@@ -127,7 +127,7 @@
     for (const a of raw) {
       if (!a || typeof a !== 'object') continue;
       if (typeof a.name !== 'string' || !a.name) continue;
-  
+
       let bytes = null;
       if (a.bytes instanceof Uint8Array) {
         bytes = a.bytes;
@@ -135,7 +135,7 @@
         bytes = base64ToBytes(a.bytes);
       }
       if (!bytes) continue;
-  
+
       out.push({
         id: String(a.id ?? a.name),
         name: a.name,
@@ -146,6 +146,25 @@
       });
     }
     return out;
+  }
+
+  /**
+   * Normalize whatever an adapter's `harvest` returned into the three things the
+   * engine now persists: the full reply text, its structural blocks, and the
+   * artifacts.
+   *
+   * Backward compatible: an adapter that still returns a bare `Artifact[]` is treated
+   * as "no text, no blocks". A newer adapter returns `{ text, blocks, artifacts }`.
+   */
+  function normalizeHarvest(raw) {
+    if (Array.isArray(raw)) {
+      return { text: '', blocks: [], artifacts: normalizeArtifacts(raw) };
+    }
+    return {
+      text: typeof raw?.text === 'string' ? raw.text : '',
+      blocks: Array.isArray(raw?.blocks) ? raw.blocks : [],
+      artifacts: normalizeArtifacts(raw?.artifacts),
+    };
   }
   function base64ToBytes(b64) {
     try {
@@ -160,7 +179,7 @@
       return null;
     }
   }
-  
+
   // ── core/stops.js ───────────────────────────────
   /**
    * Stop conditions decide when a loop is finished. They are pure predicates over
@@ -169,7 +188,7 @@
    *   import { anyOf, maxTurns, sawText } from './core/stops.js'
    *   recipe.stop = anyOf(maxTurns(30), sawText('全书完'))
    */
-  
+
   /**
    * @typedef {object} RunState
    * @property {number} turn         1-based index of the turn that just settled
@@ -180,19 +199,19 @@
    * @property {number} now
    * @property {number} artifactsThisRun   total files saved so far
    */
-  
+
   const norm = (s) => String(s ?? '').toLowerCase();
-  
+
   /** Never stop on its own. */
   const never = () => ({ stop: false });
-  
+
   /** Stop after `n` completed turns. */
   function maxTurns(n) {
     return (s) => (s.turnsCompleted >= n
       ? { stop: true, reason: `reached ${n} turns`, code: 'max-turns' }
       : { stop: false });
   }
-  
+
   /** Stop when the newest reply ends with any of the given markers. */
   function sawText(...needles) {
     const list = needles.flat().map(norm).filter(Boolean);
@@ -204,28 +223,28 @@
         : { stop: false };
     };
   }
-  
+
   /** Stop when a regex matches the newest reply's tail. */
   function sawPattern(re) {
     return (s) => (re.test(String(s.tail ?? ''))
       ? { stop: true, reason: `reply matched ${re}`, code: 'pattern' }
       : { stop: false });
   }
-  
+
   /** Stop after N consecutive failed turns — the site is probably blocking us. */
   function tooManyErrors(n = 3) {
     return (s) => (s.consecutiveErrors >= n
       ? { stop: true, reason: `${n} consecutive errors`, code: 'errors' }
       : { stop: false });
   }
-  
+
   /** Stop after a wall-clock budget, e.g. maxDuration(8 * 3600_000). */
   function maxDuration(ms) {
     return (s) => (s.now - s.startedAt >= ms
       ? { stop: true, reason: `ran for ${Math.round((s.now - s.startedAt) / 60000)} min`, code: 'duration' }
       : { stop: false });
   }
-  
+
   /** Combine conditions: stop as soon as any of them fires. First match wins. */
   function anyOf(...conds) {
     const list = conds.flat().filter(Boolean);
@@ -237,7 +256,7 @@
       return { stop: false };
     };
   }
-  
+
   /** Guard rail: always stop if turns stop producing files for a long stretch. */
   function noArtifactsFor(n = 5) {
     return (s) => (s.turnsWithoutArtifacts >= n
@@ -253,7 +272,84 @@
       return { stop: true, reason: `stop condition threw: ${err.message}`, code: 'stop-error' };
     }
   }
-  
+
+  // ── core/session.js ─────────────────────────────
+  /**
+   * Session — the idempotent ask boundary.
+   *
+   * This is the one place that decides "have we already done this ask?" and, if so,
+   * hands back the recorded result instead of sending again. It is deliberately free
+   * of any Node built-in: the *journal* is injected, so a userscript can pass null and
+   * get a session that always asks, while the CLI/GUI pass a real `Journal` and get
+   * crash-safe replay.
+   *
+   *   const session = createSession({ journal });
+   *   const { event, replayed } = await session.ask(12, '继续', doAsk);
+   *   // replayed === true  -> doAsk was NOT called; `event` is the prior result
+   *   // replayed === false -> doAsk ran; `event` is the freshly recorded result
+   *
+   * The seq is the idempotence key. "Idempotent" here means precisely: **a prompt is
+   * sent at most once per seq**. If doAsk throws (send failed, or sent-but-harvest
+   * failed), nothing is recorded, and the next run re-issues that seq — the correct
+   * recovery, because the result of that ask was never captured.
+   */
+  function createSession({ journal = null, now = () => Date.now() } = {}) {
+    return {
+      /** Replayable clock. Work that stamps time must use this, not Date.now(). */
+      now,
+
+      /** Highest completed ask, or 0. The engine resumes at this + 1. */
+      maxSeq: () => journal?.maxSeq?.() ?? 0,
+
+      /** The recorded event for an ask, or null. */
+      get: (seq) => journal?.get?.(seq) ?? null,
+
+      /**
+       * Run `doAsk` at most once for `seq`.
+       *
+       * @param {number} seq    1-based ask number
+       * @param {string} prompt what is about to be sent (recorded verbatim)
+       * @param {() => Promise<object>} doAsk  performs send→settle→harvest, returns
+       *        { messageId, dur, text, blocks, files, artifacts, saved }
+       * @returns {Promise<{ event: object, replayed: boolean }>}
+       */
+      async ask(seq, prompt, doAsk) {
+        const cached = journal?.get?.(seq) ?? null;
+        if (cached) return { event: cached, replayed: true };
+
+        const {
+          messageId = null,
+          dur = null,
+          text = '',
+          blocks = [],
+          files = [],
+          artifacts = 0,
+          saved = 0,
+          ...rest
+        } = await doAsk();
+
+        const event = {
+          v: 2,
+          t: 'ask',
+          seq,
+          prompt,
+          at: now(),
+          messageId,
+          dur,
+          text,
+          blocks,
+          files,
+          artifacts,
+          saved,
+          ...rest,
+        };
+
+        await journal?.append?.(event);
+        return { event, replayed: false };
+      },
+    };
+  }
+
   // ── core/engine.js ──────────────────────────────
   /**
    * The engine — the entire loop, and the only file that knows the order of things.
@@ -274,11 +370,19 @@
    *
    *   bootstrap:  harvest what already exists (deduped by manifest)
    *   loop n:     prompt(n) -> send -> wait for settle -> harvest -> stop? -> pace
+   *
+   * Since 0.2.0 the loop also drives a *session* (see core/session.js). When a real
+   * journal-backed session is supplied, each turn is idempotent by its seq: a restart
+   * replays recorded turns instead of re-sending their prompts. When no session is
+   * supplied (userscript path), the engine behaves exactly as it always did — it asks
+   * every time. The session is injected, never imported, so `node:fs`-backed journals
+   * never leak into the browser bundle.
    */
-  
-  
+
+
+
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  
+
   /**
    * @param {object} opts
    * @param {object} opts.adapter      page-side adapter (see protocol.js)
@@ -286,6 +390,7 @@
    * @param {object} opts.recipe       { name, prompt(turn, state), stop }
    * @param {object} [opts.pacing]     { pollMs, settleMs, betweenTurnsMs, jitterMs, stallMs }
    * @param {object} [opts.manifest]   ManifestStore (or a compatible stub)
+   * @param {object} [opts.session]    Session (see core/session.js); defaults to ask-always
    * @param {object} [opts.logger]
    * @param {AbortSignal} [opts.signal]
    * @param {number} [opts.maxTurns]   hard ceiling, independent of recipe.stop
@@ -296,6 +401,7 @@
     recipe,
     pacing = {},
     manifest,
+    session,
     logger = console,
     signal,
     maxTurns = 200,
@@ -309,17 +415,28 @@
       maxConsecutiveErrors: 3,
       ...pacing,
     };
-  
+
+    // The session is the ask gate. A null-journal session still asks every time, so
+    // the userscript path is byte-for-byte the old behavior.
+    session ??= createSession();
+    const now = session.now.bind(session);
+
     const startedAt = Date.now();
+    // Resuming starts from the manifest's position. The *journal* does not advance
+    // this counter directly — instead the loop replays every recorded seq through
+    // session.ask(), which returns the cached result without re-sending. That replay
+    // is what re-syncs a manifest that fell behind the journal in a kill-window, and
+    // it is O(1) per turn because a cached hit never touches the page.
     let turnsCompleted = manifest?.turnsCompleted ?? 0;
     let sendErrors = 0;
     let harvestErrors = 0;
+    let lastHarvestError = null;
     let turnsWithoutArtifacts = 0;
     let artifactsThisRun = 0;
     let lastMessageId = manifest?.lastMessageId ?? null;
     let lastTail = '';
     const savedThisRun = [];
-  
+
     const state = () => ({
       turn: turnsCompleted + 1,
       turnsCompleted,
@@ -330,116 +447,167 @@
       now: Date.now(),
       tail: lastTail,
     });
-  
+
     const aborted = () => signal?.aborted === true;
-  
+
     logger.info?.(`loop start · recipe=${recipe.name} · next turn=${turnsCompleted + 1}`);
-  
+
     // ── bootstrap: adopt whatever the conversation already contains ─────────────
     try {
       const st = normalizeStatus(await waitForIdle({ adapter, pacing: p, signal }));
       lastTail = st.tail;
       lastMessageId = st.lastMessageId ?? lastMessageId;
-      if (st.lastMessageId) {
-        const adopted = await harvestInto({ adapter, sink, manifest, logger, messageId: st.lastMessageId, savedThisRun });
+      // Adopt only a turn the journal does *not* already cover. When the journal is
+      // intact (e.g. the manifest was lost but the journal survived), the latest
+      // message is already fully recorded and re-adopting it would re-save a file that
+      // is already on disk — a duplicate. When the journal is empty (first run, or
+      // userscript with no journal), adopt proceeds as it always has.
+      const latest = session.get(session.maxSeq());
+      const alreadyRecorded = latest && latest.messageId && latest.messageId === st.lastMessageId;
+      if (st.lastMessageId && !alreadyRecorded) {
+        const adopted = await adoptExisting({ adapter, sink, manifest, logger, messageId: st.lastMessageId });
         if (adopted.saved > 0) logger.info?.(`bootstrap: adopted ${adopted.saved} existing file(s)`);
       }
     } catch (err) {
       logger.warn?.(`bootstrap skipped — ${err.message}`);
     }
-  
+
     for (let n = turnsCompleted + 1; n <= maxTurns; n++) {
       if (aborted()) return finish('aborted', 'abort signal');
-  
-      // ── 1. send ───────────────────────────────────────────────────────────────
+
+      // ── 0. prompt ─────────────────────────────────────────────────────────────
       const prompt = typeof recipe.prompt === 'function'
         ? recipe.prompt(n, state())
         : String(recipe.prompt ?? 'continue');
-  
+
+      // ── 1. the turn, idempotent by seq ────────────────────────────────────────
+      let event;
+      let replayed;
       try {
-        // Never send into a page that is still producing; that is how two prompts
-        // end up merged into one turn.
-        await waitForIdle({ adapter, pacing: p, signal });
-        await adapter.send(prompt);
-        sendErrors = 0;
-        logger.info?.(`turn ${n}: sent — ${preview(prompt)}`);
+        ({ event, replayed } = await session.ask(n, prompt, () => performTurn(n, prompt)));
       } catch (err) {
         if (aborted()) return finish('aborted', 'abort signal');
+        // Only send/settle failures propagate here (harvest failures are absorbed
+        // inside performTurn and recorded, so a restart never re-sends them).
         sendErrors += 1;
-        logger.warn?.(`turn ${n}: send failed — ${err.message}`);
+        logger.warn?.(`turn ${n}: ${err.message}`);
         if (sendErrors >= p.maxConsecutiveErrors) return finish('error', `send failed ${sendErrors}x: ${err.message}`);
         await sleep(p.betweenTurnsMs * 2);
         n -= 1;                                  // retry this turn number
         continue;
       }
-  
-      // ── 2. wait for the turn to settle ────────────────────────────────────────
-      let st;
-      try {
-        st = normalizeStatus(await waitForIdle({ adapter, pacing: p, signal, logger }));
-      } catch (err) {
-        sendErrors += 1;
-        logger.warn?.(`turn ${n}: never settled — ${err.message}`);
-        if (sendErrors >= p.maxConsecutiveErrors) return finish('error', err.message);
-        n -= 1;
-        continue;
-      }
-      lastTail = st.tail;
-  
-      // ── 3. harvest ────────────────────────────────────────────────────────────
-      try {
-        const res = await harvestInto({
-          adapter, sink, manifest, logger, messageId: st.lastMessageId, savedThisRun,
-        });
-        artifactsThisRun += res.saved;
-        turnsWithoutArtifacts = res.saved > 0 ? 0 : turnsWithoutArtifacts + 1;
-        harvestErrors = 0;
-        logger.turn?.(n, { status: st, saved: res.saved, artifacts: res.found });
-      } catch (err) {
-        harvestErrors += 1;
-        logger.warn?.(`turn ${n}: harvest failed — ${err.message}`);
-        if (harvestErrors >= p.maxConsecutiveErrors) {
-          return finish('error', `harvest failed ${harvestErrors}x: ${err.message}`);
+
+      // ── 2. reconcile + bookkeeping (runs for fresh *and* replayed turns) ─────
+      if (replayed) {
+        // The kill-window between journal.append and manifest.save could leave the
+        // manifest unaware of files that are already on disk. Re-sync it without
+        // re-saving: the bytes are already where event.files says they are.
+        for (const f of event.files ?? []) {
+          if (f.id && !manifest?.has(f.id)) {
+            manifest?.record({ id: f.id, name: f.name, path: f.path, bytes: f.bytes });
+          }
         }
+        logger.info?.(`turn ${n}: replayed from journal (${preview(prompt)})`);
       }
-  
-      // ── 4. bookkeeping ────────────────────────────────────────────────────────
-      lastMessageId = st.lastMessageId ?? lastMessageId;
+
+      lastMessageId = event.messageId ?? lastMessageId;
+      lastTail = typeof event.tail === 'string' && event.tail
+        ? event.tail
+        : (typeof event.text === 'string' ? event.text.slice(-200) : '');
       turnsCompleted = n;
       manifest?.noteTurn({ lastMessageId });
       await manifest?.saveIfDirty();
-  
-      // ── 5. stop conditions ────────────────────────────────────────────────────
+
+      if (harvestErrors >= p.maxConsecutiveErrors) {
+        return finish('error', `harvest failed ${harvestErrors}x: ${lastHarvestError ?? ''}`);
+      }
+
+      // ── 3. stop conditions ────────────────────────────────────────────────────
       const stop = evaluateStop(recipe.stop, state());
       if (stop.stop) return finish('stopped', stop.reason, stop.code);
-  
+
       if (aborted()) return finish('aborted', 'abort signal');
-  
-      // ── 6. pacing ─────────────────────────────────────────────────────────────
+
+      // ── 4. pacing ─────────────────────────────────────────────────────────────
       const delay = p.betweenTurnsMs + Math.floor(Math.random() * p.jitterMs);
       logger.info?.(`  waiting ${(delay / 1000).toFixed(1)}s`);
       await sleep(delay);
     }
-  
+
     return finish('stopped', `hit hard ceiling of ${maxTurns} turns`, 'max-turns');
-  
+
     // ── helpers ─────────────────────────────────────────────────────────────────
-  
-    async function harvestInto({ adapter: a, sink: s, manifest: m, logger: lg, messageId, savedThisRun: acc }) {
-      const raw = await a.harvest({ messageId });
-      const artifacts = normalizeArtifacts(raw);
+
+    /**
+     * Do one real turn: send, settle, harvest, persist. Returns the fields the
+     * session records. Throws on send/settle failure (the caller retries the seq);
+     * absorbs harvest failure (records text-less, files-less) so a restart skips
+     * the turn instead of re-spending quota on it.
+     */
+    async function performTurn(n, prompt) {
+      // Never send into a page that is still producing; that is how two prompts
+      // end up merged into one turn.
+      await waitForIdle({ adapter, pacing: p, signal });
+      const sendStartedAt = now();
+      await adapter.send(prompt);
+      sendErrors = 0;
+      logger.info?.(`turn ${n}: sent — ${preview(prompt)}`);
+
+      const st = normalizeStatus(await waitForIdle({ adapter, pacing: p, signal, logger }));
+      lastTail = st.tail;
+
+      let text = '';
+      let blocks = [];
+      let artifacts = [];
+      let saved = 0;
+      const files = [];
+      try {
+        ({ text, blocks, artifacts } = normalizeHarvest(await adapter.harvest({ messageId: st.lastMessageId })));
+        for (const art of artifacts) {
+          if (manifest?.has(art.id)) continue;
+          const res = await sink.save(art);
+          manifest?.record({ ...art, path: res.path, bytes: res.bytes });
+          saved += 1;
+          files.push({ id: art.id, name: art.name, path: res.path, bytes: res.bytes });
+          savedThisRun.push({ name: art.name, path: res.path, bytes: res.bytes });
+          logger.info?.(`  saved ${art.name} (${res.bytes} B) -> ${res.path}`);
+        }
+        harvestErrors = 0;
+      } catch (err) {
+        harvestErrors += 1;
+        lastHarvestError = err.message;
+        logger.warn?.(`turn ${n}: harvest failed — ${err.message}`);
+      }
+      artifactsThisRun += saved;
+      turnsWithoutArtifacts = saved > 0 ? 0 : turnsWithoutArtifacts + 1;
+      logger.turn?.(n, { status: st, saved, artifacts: artifacts.length });
+
+      return {
+        messageId: st.lastMessageId ?? null,
+        dur: now() - sendStartedAt,
+        tail: st.tail,
+        text,
+        blocks,
+        files,
+        artifacts: artifacts.length,
+        saved,
+      };
+    }
+
+    /** Adopt a turn that already finished before we started (no send, no journal). */
+    async function adoptExisting({ adapter: a, sink: s, manifest: m, logger: lg, messageId }) {
+      const { artifacts } = normalizeHarvest(await a.harvest({ messageId }));
       let saved = 0;
       for (const art of artifacts) {
         if (m?.has(art.id)) continue;
         const res = await s.save(art);
         m?.record({ ...art, path: res.path, bytes: res.bytes });
         saved += 1;
-        acc.push({ name: art.name, path: res.path, bytes: res.bytes });
         lg.info?.(`  saved ${art.name} (${res.bytes} B) -> ${res.path}`);
       }
       return { found: artifacts.length, saved };
     }
-  
+
     function finish(code, reason, stopCode) {
       logger.info?.(`loop end · ${code} · ${reason ?? ''}`);
       return {
@@ -453,7 +621,7 @@
       };
     }
   }
-  
+
   /**
    * Block until the page reports a settled turn.
    *
@@ -467,7 +635,7 @@
     let sawRunning = false;
     let idleSince = 0;
     let polls = 0;
-  
+
     while (Date.now() < deadline) {
       if (signal?.aborted) throw new Error('aborted');
       const st = normalizeStatus(await adapter.status({}));
@@ -476,7 +644,7 @@
       // A turn can take minutes. Without this the caller has no idea whether the
       // model is thinking, writing, or wedged — which is the whole point of a HUD.
       logger?.poll?.(st, { polls, elapsedMs: Date.now() - deadline + pacing.stallMs });
-  
+
       if (st.phase === 'running' || st.phase === 'stalled') {
         sawRunning = true;
         idleSince = 0;
@@ -486,17 +654,17 @@
         if (!idleSince) idleSince = Date.now();
         if (Date.now() - idleSince >= pacing.settleMs) return st;
       }
-  
+
       await sleep(pacing.pollMs);
     }
     throw new Error(`page stayed busy for over ${Math.round(pacing.stallMs / 60000)} min (${polls} polls)`);
   }
-  
+
   function preview(s) {
     const one = String(s).replace(/\s+/g, ' ').trim();
     return one.length > 70 ? `${one.slice(0, 70)}…` : one;
   }
-  
+
   // ── core/adapters/chatgpt.js ────────────────────
   /**
    * chatgpt adapter — v1
@@ -527,7 +695,7 @@
     const OPTS = options || {};
     const LOGGER = OPTS.logger || (typeof console !== 'undefined' ? console : { info() {}, warn() {} });
     const PROTOCOL_VERSION = 1;
-  
+
     /**
      * How to hand bytes back.
      *
@@ -536,7 +704,7 @@
      *            Uint8Array degrades to `{"0":1,"1":2,...}` there — huge and lossy)
      */
     const BYTES_MODE = OPTS.serializeBytes === 'base64' ? 'base64' : 'typed';
-  
+
     function toBase64(bytes) {
       let s = '';
       const CHUNK = 0x8000;
@@ -545,8 +713,8 @@
       }
       return btoa(s);
     }
-  
-  
+
+
     const API = {
       session: '/api/auth/session',
       conversation: (id) => '/backend-api/conversation/' + id,
@@ -556,24 +724,24 @@
         + '&message_id=' + encodeURIComponent(messageId)
         + '&sandbox_path=' + encodeURIComponent(sandboxPath),
     };
-  
+
     /** Localised aria-labels accepted as "the send button". */
     const SEND_LABELS = /^(send|发送|送信|보내기|enviar|envoyer|senden)$/i;
     const STOP_LABELS = /^(stop|停止|停止生成|停止响应|中止|中断)/i;
     const SANDBOX_LINK = /\[([^\]]*)\]\(sandbox:([^)]+)\)/g;
-  
+
     let cachedToken = null;
     let cachedTokenExpiry = 0;
-  
+
     // ── helpers ────────────────────────────────────────────────────────────────
-  
+
     function conversationId() {
       const g = location.pathname.match(/\/g\/[^/]+\/c\/([0-9a-f-]{16,})/i);
       if (g) return g[1];
       const m = location.pathname.match(/\/c\/([0-9a-f-]{16,})/i);
       return m ? m[1] : null;
     }
-  
+
     async function authToken() {
       const now = Date.now();
       if (cachedToken && now < cachedTokenExpiry - 60_000) return cachedToken;
@@ -585,7 +753,7 @@
       cachedTokenExpiry = s.expires ? Date.parse(s.expires) : now + 10 * 60_000;
       return cachedToken;
     }
-  
+
     async function apiGet(url) {
       const token = await authToken();
       const r = await fetch(url, {
@@ -595,12 +763,12 @@
       if (!r.ok) throw new Error('GET ' + url.split('?')[0] + ' -> HTTP ' + r.status);
       return r;
     }
-  
+
     function composer() {
       return document.querySelector('div.ProseMirror[contenteditable="true"]')
         || document.querySelector('[contenteditable="true"]');
     }
-  
+
     function findButton(re) {
       const btns = Array.prototype.slice.call(document.querySelectorAll('button'));
       // Exact aria-label first, then data-testid, so a stray "Stop generating" in the
@@ -611,7 +779,7 @@
       if (byAria.length) return byAria[0];
       return btns.find((b) => re.test(b.getAttribute('data-testid') || '')) || null;
     }
-  
+
     function isStreaming() {
       const stop = findButton(STOP_LABELS);
       if (stop && !stop.disabled && stop.offsetParent !== null) return true;
@@ -619,19 +787,19 @@
       if (c && c.getAttribute('contenteditable') === 'false') return true;
       return false;
     }
-  
+
     function textOf(message) {
       const parts = (message && message.content && message.content.parts) || [];
       return parts.map((p) => (typeof p === 'string' ? p : '')).join('');
     }
-  
+
     // ── adapter ────────────────────────────────────────────────────────────────
-  
+
     return {
       id: 'chatgpt',
       displayName: 'ChatGPT',
       protocolVersion: PROTOCOL_VERSION,
-  
+
       probe() {
         const id = conversationId();
         const box = composer();
@@ -647,12 +815,12 @@
           title: document.title,
         };
       },
-  
+
       async send(text) {
         const box = composer();
         if (!box) throw new Error('composer not found — is the chat fully loaded?');
         if (isStreaming()) throw new Error('a turn is still running; refusing to queue another prompt');
-  
+
         box.focus();
         // Replace the contents through the native input path. execCommand keeps
         // ProseMirror's internal document in sync; writing innerHTML does not, and the
@@ -664,7 +832,7 @@
         sel.addRange(range);
         document.execCommand('delete');
         document.execCommand('insertText', false, text);
-  
+
         // The send button is rendered by React only after the first character lands.
         // Measured on Edge 157 / ChatGPT 2026-11: ~600 ms. Poll instead of guessing.
         const deadline = Date.now() + 4000;
@@ -677,7 +845,7 @@
           if (btn && !btn.disabled) break;
           btn = null;
         }
-  
+
         if (btn) {
           btn.click();
         } else {
@@ -686,7 +854,7 @@
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
           }));
         }
-  
+
         // Confirm the turn actually started: a click that misses leaves the text in
         // place, and retrying then would double-send. Verify the composer drained.
         const confirmBy = Date.now() + 3000;
@@ -696,7 +864,7 @@
           if ((box.innerText || '').trim().length === 0) { drained = true; break; }
         }
         if (!drained) throw new Error('send did not take — composer still holds the text');
-  
+
         // A fresh chat only gains its conversation id after the server accepts the
         // message. Wait for the turn to visibly start (id in URL, or streaming), so
         // the caller's first status() cannot mistake "not started yet" for "settled".
@@ -705,10 +873,10 @@
           if (conversationId() || isStreaming()) break;
           await new Promise((r) => setTimeout(r, 120));
         }
-  
+
         return { ok: true, typed: text.length, via: btn ? 'button' : 'enter' };
       },
-  
+
       async status() {
         // A brand-new chat has no id in the URL until the first message is accepted,
         // and the id appears a few hundred ms after sending. Returning "idle" during
@@ -724,16 +892,16 @@
             if (id) break;
           }
         }
-  
+
         if (isStreaming()) {
           return { phase: 'running', lastMessageId: null, lastMessageAt: Date.now(), model: null, textLength: 0, tail: '' };
         }
-  
+
         if (!id) {
           // Still a fresh, empty chat: nothing has been sent, nothing to harvest.
           return { phase: 'idle', lastMessageId: null, lastMessageAt: null, model: null, textLength: 0, tail: '' };
         }
-  
+
         // Settled, or never started. Ask the API which message is current so the engine
         // can tell "same turn seen twice" apart from "a new turn arrived".
         const r = await apiGet(API.conversation(id));
@@ -755,21 +923,24 @@
           error: finished ? undefined : 'message status=' + msg.status,
         };
       },
-  
+
       async harvest(args) {
         const a = args || {};
         const convId = conversationId();
         if (!convId) throw new Error('no conversation id in URL');
-  
+
         const r = await apiGet(API.conversation(convId));
         const j = await r.json();
         const targetId = a.messageId || j.current_node;
         const node = j.mapping && j.mapping[targetId];
         const msg = node && node.message;
         if (!msg) throw new Error('message ' + targetId + ' not found in conversation');
-  
+
         const text = textOf(msg);
-  
+        const blocks = (msg.content && msg.content.parts)
+          ? msg.content.parts.map((p, i) => ({ i, text: typeof p === 'string' ? p : '' })).filter((b) => b.text.length)
+          : [];
+
         // sandbox links are the only reliable pointer to generated files: the artifact
         // cards in the DOM are rendered from exactly these markdown links.
         const refs = [];
@@ -778,8 +949,8 @@
         while ((m = SANDBOX_LINK.exec(text)) !== null) {
           refs.push({ label: m[1], sandboxPath: decodeURIComponent(m[2]) });
         }
-        if (!refs.length) return [];
-  
+        if (!refs.length) return { text, blocks, artifacts: [] };
+
         const out = [];
         for (const ref of refs) {
           const metaRes = await apiGet(API.interpreterDownload(convId, msg.id, ref.sandboxPath));
@@ -803,12 +974,12 @@
             source: 'sandbox:' + ref.sandboxPath,
           });
         }
-        return out;
+        return { text, blocks, artifacts: out };
       },
     };
   }
   createChatGptAdapter;
-  
+
   // ── core/sinks.js ───────────────────────────────
   /**
    * Browser-side sinks. No Node built-ins may be imported from this file — it is
@@ -818,7 +989,7 @@
    * manager) and `memorySink` (for dry runs and tests). The engine never knows which
    * one it got.
    */
-  
+
   /**
    * Hand the bytes to the browser's download manager.
    *
@@ -847,7 +1018,7 @@
       },
     };
   }
-  
+
   /** Sink that remembers instead of writing — for dry runs and tests. */
   function createMemorySink() {
     const files = [];
@@ -860,17 +1031,17 @@
       },
     };
   }
-  
+
   // ── core/recipes/index.js ───────────────────────
   /**
    * Recipes bundle the three things a user actually cares about: what to say each
    * turn, when to stop, and where the output goes. They are plain data, so a recipe
    * can be written in a README and pasted into a config.
    */
-  
+
   // sawPattern is re-exported for recipe authors building their own stop set.
   { sawPattern };
-  
+
   /**
    * A prompt may be a string or a function of (turn, state). Returning a function is
    * how a recipe injects the chapter number without the user re-typing it every turn.
@@ -881,7 +1052,7 @@
     stop: 'stop condition (see core/stops.js)',
     outDir: 'string — where the sink writes',
   };
-  
+
   const normalize = (r) => ({
     name: r.name ?? 'unnamed',
     prompt: r.prompt ?? 'continue',
@@ -892,11 +1063,11 @@
     stallMs: r.stallMs,
     description: r.description ?? '',
   });
-  
+
   const neverStop = () => ({ stop: false });
-  
+
   // ── Built-in recipes ───────────────────────────────────────────────────────────
-  
+
   /**
    * Serialized long-form writing. One turn = one chapter.
    *
@@ -918,7 +1089,7 @@
       opts.maxTurns ? maxTurns(opts.maxTurns) : null,
     ),
   });
-  
+
   /** Batch translation: same instruction each turn, driven by the source files. */
   const translate = (opts = {}) => normalize({
     name: 'translate',
@@ -927,7 +1098,7 @@
     prompt: opts.prompt ?? '把上一轮的文件翻译成中文，保存成新文件，文件名保持不变但加 _zh 后缀。',
     stop: opts.stop ?? anyOf(tooManyErrors(3), noArtifactsFor(3), opts.maxTurns ? maxTurns(opts.maxTurns) : null),
   });
-  
+
   /** Do the same thing N times, no per-turn adaptation. */
   const repeat = (prompt, opts = {}) => normalize({
     name: opts.name ?? 'repeat',
@@ -936,11 +1107,11 @@
     prompt,
     stop: anyOf(maxTurns(opts.times ?? 10), tooManyErrors(3)),
   });
-  
+
   /** Escape hatch: bring your own prompt/stop/outDir. */
   const custom = (opts) => normalize(opts);
   const builtins = { novel, translate, repeat, custom };
-  
+
   /** Resolve `--recipe novel` / `--recipe ./my-recipe.mjs` / inline JSON. */
   async function resolveRecipe(spec, opts = {}) {
     if (spec && typeof spec === 'object') return normalize(spec);
@@ -953,7 +1124,7 @@
     if (name.trim().startsWith('{')) return normalize(JSON.parse(name));
     throw new Error(`unknown recipe "${name}". built-ins: ${Object.keys(builtins).join(', ')}`);
   }
-  
+
   // ── userscript/manifest-lite.js ─────────────────
   /**
    * Browser-side manifest.
@@ -974,7 +1145,7 @@
         if (typeof GM_setValue === 'function') GM_setValue(KEY, data);
       } catch { /* storage may be full or disabled; the loop still works this session */ }
     };
-  
+
     let data = load() ?? {
       version: 1,
       turnsCompleted: 0,
@@ -983,7 +1154,7 @@
       artifacts: [],
     };
     const seen = new Set(data.seenIds ?? []);
-  
+
     return {
       get data() { return data; },
       get turnsCompleted() { return data.turnsCompleted ?? 0; },
@@ -1009,10 +1180,10 @@
       async saveIfDirty() { persist(); },
     };
   }
-  
+
   // ── userscript/hud.js ───────────────────────────
   /** Floating panel: start/stop, live status, and a tail of the log. */
-  
+
   const CSS = `
   #loopcrop-hud { position: fixed; right: 16px; bottom: 16px; width: 320px; z-index: 2147483000;
     font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: #e6e6e6;
@@ -1044,32 +1215,32 @@
   function createHud({ onStart, onStop }) {
     let root, logEl, statusEl, startBtn, stopBtn;
     const lines = [];
-  
+
     const el = (tag, cls, text) => {
       const n = document.createElement(tag);
       if (cls) n.className = cls;
       if (text != null) n.textContent = text;
       return n;
     };
-  
+
     function build() {
       if (root) return;
       const style = el('style');
       style.textContent = CSS;
       document.head.appendChild(style);
-  
+
       root = el('div');
       root.id = 'loopcrop-hud';
-  
+
       const head = el('div', 'pl-head');
       head.append(el('span', 'pl-dot'), el('span', 'pl-title', 'loopcrop'),
         (() => { const b = el('button', '', '×'); b.style.flex = '0 0 auto';
           b.style.padding = '0 6px'; b.onclick = () => show(false); return b; })());
-  
+
       const body = el('div', 'pl-body');
       statusEl = el('div', 'pl-status', 'idle');
       logEl = el('div', 'pl-log');
-  
+
       const row = el('div', 'pl-row');
       startBtn = el('button', 'primary', 'Start');
       stopBtn = el('button', '', 'Stop');
@@ -1077,14 +1248,14 @@
       startBtn.onclick = () => { onStart(); };
       stopBtn.onclick = () => { onStop(); };
       row.append(startBtn, stopBtn);
-  
+
       body.append(statusEl, row, logEl);
       root.append(head, body);
       document.body.appendChild(root);
-  
+
       makeDraggable(root, head);
     }
-  
+
     function setState(state, text) {
       build();
       root.classList.toggle('running', state === 'running');
@@ -1095,7 +1266,7 @@
       if (state === 'running') statusEl.textContent = 'running…';
       if (state === 'idle') statusEl.textContent = 'idle';
     }
-  
+
     function log(level, msg) {
       build();
       const cls = level === 'warn' ? 'warn' : level === 'error' ? 'error' : '';
@@ -1105,25 +1276,25 @@
       while (lines.length > 200) lines.shift().remove();
       logEl.scrollTop = logEl.scrollHeight;
     }
-  
+
     function finish(result) {
       setState(result.code === 'error' ? 'error' : 'idle');
       statusEl.textContent = `${result.code} · ${result.turnsCompleted} turns · ${result.artifactsThisRun} files`;
     }
-  
+
     function error(msg) {
       setState('error', `error: ${msg}`);
       log('error', msg);
     }
-  
+
     function show(visible) {
       if (visible) build();
       if (root) root.hidden = !visible;
     }
-  
+
     return { setState, log, finish, error, show };
   }
-  
+
   function makeDraggable(root, handle) {
     let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
     handle.addEventListener('pointerdown', (e) => {
@@ -1143,13 +1314,13 @@
     });
     handle.addEventListener('pointerup', () => { dragging = false; });
   }
-  
+
   // ── userscript/config.js ────────────────────────
   /**
    * Config for the userscript front-end: defaults, then whatever the user stored via
    * GM_setValue, then anything in the URL hash (handy for one-off runs).
    */
-  
+
   const DEFAULTS = {
     recipe: 'novel',
     outDir: './chapters',
@@ -1165,7 +1336,7 @@
     const fromHash = readHash();
     return { ...DEFAULTS, ...stored, ...fromHash };
   }
-  
+
   function readStored() {
     try {
       if (typeof GM_getValue !== 'function') return {};
@@ -1179,7 +1350,7 @@
       GM_setValue('loopcrop:config', JSON.stringify({ ...cur, ...patch }));
     } catch { /* ignore unavailable storage */ }
   }
-  
+
   function readHash() {
     const h = location.hash.replace(/^#/, '');
     if (!h.includes('loopcrop')) return {};
@@ -1191,7 +1362,7 @@
     }
     return out;
   }
-  
+
   // ── userscript/entry.js ─────────────────────────
   /**
    * userscript front-end — the same engine, running inside the tab you already have.
@@ -1200,33 +1371,33 @@
    * and you get the loop with no Node, no CLI, no extension bridge. It reaches the
    * engine through the adapter protocol and the browser sink.
    */
-  
-  
-  
-  
-  
-  
-  
+
+
+
+
+
+
+
   function startLoopCrop() {
     const adapter = createChatGptAdapter({ logger: createConsoleShim() });
     const probe = adapter.probe();
     if (!probe.ok) return;                     // not a conversation page, stay quiet
-  
+
     const hud = createHud({ onStart, onStop });
     let controller = null;
     let running = false;
-  
+
     async function onStart() {
       if (running) return;
       const cfg = await loadConfig();
       running = true;
       controller = new AbortController();
       hud.setState('running');
-  
+
       try {
         const recipe = await resolveRecipe(cfg.recipe, { outDir: cfg.outDir, maxTurns: cfg.maxTurns });
         const manifest = createInMemoryManifest();
-  
+
         const result = await runLoop({
           adapter,
           sink: createDownloadSink({ subdir: cfg.subdir, logger: createConsoleShim(hud) }),
@@ -1242,7 +1413,7 @@
             stallMs: cfg.stallMin * 60_000,
           },
         });
-  
+
         hud.finish(result);
       } catch (err) {
         hud.error(err.message);
@@ -1251,21 +1422,21 @@
         controller = null;
       }
     }
-  
+
     function onStop() {
       controller?.abort();
     }
-  
+
     // One convenient entry point from the userscript manager's menu.
     if (typeof GM_registerMenuCommand === 'function') {
       GM_registerMenuCommand('loopcrop: start loop', onStart);
       GM_registerMenuCommand('loopcrop: stop loop', onStop);
       GM_registerMenuCommand('loopcrop: show panel', () => hud.show(true));
     }
-  
+
     hud.show(true);
   }
-  
+
   /** Route engine logs into both the page console and the floating panel. */
   function createConsoleShim(hud) {
     const line = (level, msg) => {
@@ -1280,7 +1451,7 @@
     };
   }
   { startLoopCrop };
-  
+
 
   // ── bootstrap ─────────────────────────────────────────────────────────────
   if (document.readyState === 'loading') {

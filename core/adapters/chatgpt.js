@@ -270,6 +270,9 @@ export function createChatGptAdapter(options) {
       if (!msg) throw new Error('message ' + targetId + ' not found in conversation');
 
       const text = textOf(msg);
+      const blocks = (msg.content && msg.content.parts)
+        ? msg.content.parts.map((p, i) => ({ i, text: typeof p === 'string' ? p : '' })).filter((b) => b.text.length)
+        : [];
 
       // sandbox links are the only reliable pointer to generated files: the artifact
       // cards in the DOM are rendered from exactly these markdown links.
@@ -279,7 +282,7 @@ export function createChatGptAdapter(options) {
       while ((m = SANDBOX_LINK.exec(text)) !== null) {
         refs.push({ label: m[1], sandboxPath: decodeURIComponent(m[2]) });
       }
-      if (!refs.length) return [];
+      if (!refs.length) return { text, blocks, artifacts: [] };
 
       const out = [];
       for (const ref of refs) {
@@ -304,7 +307,7 @@ export function createChatGptAdapter(options) {
           source: 'sandbox:' + ref.sandboxPath,
         });
       }
-      return out;
+      return { text, blocks, artifacts: out };
     },
   };
 }
