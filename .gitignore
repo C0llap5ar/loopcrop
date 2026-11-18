@@ -1,0 +1,9 @@
+node_modules/
+dist/*.map
+*.log
+out/
+chapters/
+translated/
+test-out/
+.loopcrop-gui.json
+.DS_Store

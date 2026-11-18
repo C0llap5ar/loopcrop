@@ -1,0 +1,49 @@
+{
+  "name": "loopcrop",
+  "version": "0.1.0",
+  "description": "Turn any AI chat web UI into a repeatable prompt loop: send, wait, harvest the files it produced, repeat.",
+  "type": "module",
+  "license": "MIT",
+  "author": "C0llap5ar",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/C0llap5ar/loopcrop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/C0llap5ar/loopcrop/issues"
+  },
+  "homepage": "https://github.com/C0llap5ar/loopcrop#readme",
+  "keywords": [
+    "chatgpt",
+    "claude",
+    "userscript",
+    "automation",
+    "loop-crop",
+    "agent",
+    "novel-writing",
+    "batch-generation"
+  ],
+  "bin": {
+    "loopcrop": "./cli/loop.mjs"
+  },
+  "files": [
+    "core",
+    "cli",
+    "gui",
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/build-userscript.mjs",
+    "start": "node cli/loop.mjs",
+    "gui": "node gui/server.mjs",
+    "test": "node --test test/",
+    "test:live": "node test/smoke-prompt-integrity.mjs",
+    "smoke": "node cli/loop.mjs --recipe ./examples/smoke-recipe.mjs --out ./test-out --turns 1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>loopcrop</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead__id">
+    <span class="mark">lc</span>
+    <h1>loopcrop</h1>
+    <p class="tagline">让对话页自己往下跑，产物落地成文件</p>
+  </div>
+  <div class="conn" id="conn" data-state="down">
+    <span class="conn__dot"></span>
+    <span class="conn__text" id="connText">未连接</span>
+  </div>
+</header>
+
+<main class="stage">
+
+  <!-- ── 运行台 ─────────────────────────────────────────────────────────── -->
+  <section class="run" aria-label="运行状态">
+    <div class="status" id="status" data-phase="idle">
+      <div class="status__head">
+        <p class="status__phase" id="statusPhase">待机</p>
+        <p class="status__elapsed" id="statusElapsed"></p>
+      </div>
+      <p class="status__turn">
+        <span class="num" id="statusTurn">0</span>
+        <span class="sep">/</span>
+        <span class="num dim" id="statusTarget">0</span>
+        <span class="unit">轮</span>
+      </p>
+      <div class="status__bar" id="statusBar"><i></i></div>
+      <p class="status__hint" id="statusHint"></p>
+    </div>
+
+    <div class="files" aria-labelledby="filesHead">
+      <div class="files__bar">
+        <h2 id="filesHead">产物</h2>
+        <p class="files__meta" id="filesMeta">—</p>
+      </div>
+      <ul class="files__list" id="filesList">
+        <li class="files__empty" id="filesEmpty">
+          还没有文件落地。连上浏览器、填好提示词，点「开始」。
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ── 控制 ───────────────────────────────────────────────────────────── -->
+  <aside class="panel" aria-label="配置">
+
+    <div class="field-group">
+      <div class="field-row">
+        <span class="field-label">目标标签页</span>
+        <button class="ghost" id="btnProbe" type="button">刷新</button>
+      </div>
+      <select id="tab">
+        <option value="">先连接浏览器</option>
+      </select>
+    </div>
+
+    <div class="field-group">
+      <div class="field-row">
+        <span class="field-label">提示词</span>
+        <select id="preset" title="预设会覆盖下方提示词">
+          <option value="">预设…</option>
+          <option value="novel">小说续写（「继续」）</option>
+          <option value="translate">批量翻译</option>
+          <option value="repeat">重复 N 次</option>
+        </select>
+      </div>
+      <textarea id="prompt" rows="4" spellcheck="false">继续</textarea>
+      <p class="hint">每轮发给对话页的指令。可写 <code>{turn}</code>，运行时会替换成当前轮次。</p>
+    </div>
+
+    <div class="field-group fields">
+      <label class="field">
+        <span>输出目录</span>
+        <input id="out" type="text" value="./out" spellcheck="false">
+      </label>
+      <label class="field field--half">
+        <span>轮次上限</span>
+        <input id="turns" type="number" min="1" max="999" value="10">
+      </label>
+      <label class="field field--half">
+        <span>轮间隔（秒）</span>
+        <input id="between" type="number" min="0" max="600" value="5">
+      </label>
+    </div>
+
+    <div class="actions">
+      <button class="primary" id="btnStart" type="button" disabled>开始</button>
+      <button class="stop" id="btnStop" type="button" disabled>停止</button>
+    </div>
+
+    <p class="note">
+      停止只在当前这一轮写完之后生效；中途硬中断会浪费这一轮的产物。
+    </p>
+  </aside>
+</main>
+
+<!-- ── 日志 ─────────────────────────────────────────────────────────────── -->
+<section class="log" aria-labelledby="logHead">
+  <div class="log__bar">
+    <h2 id="logHead">日志</h2>
+    <div class="log__tools">
+      <button class="ghost" id="btnClear" type="button">清屏</button>
+    </div>
+  </div>
+  <ol class="log__lines" id="logLines"></ol>
+</section>
+
+<script src="/app.js" type="module"></script>
+</body>
+</html>
