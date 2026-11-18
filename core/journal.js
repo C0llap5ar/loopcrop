@@ -121,6 +121,16 @@ export class Journal {
       files: (ev.files ?? []).map((f) => ({ name: f.name, bytes: f.bytes })),
       artifacts: ev.artifacts ?? 0,
       saved: ev.saved ?? 0,
+      // Work annotations. They are absent on plain recipe runs, which is fine — the
+      // timeline just renders a flat list of asks in that case.
+      stage: ev.stage ?? null,
+      stageIndex: ev.stageIndex ?? null,
+      itemIndex: ev.itemIndex ?? null,
+      itemId: ev.itemId ?? null,
+      round: ev.round ?? null,
+      tryIndex: ev.tryIndex ?? null,
+      check: ev.check ?? null,
+      checkReason: ev.checkReason ?? null,
     }));
   }
 

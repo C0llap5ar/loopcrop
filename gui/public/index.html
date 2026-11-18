@@ -8,113 +8,173 @@
 </head>
 <body>
 
-<header class="masthead">
-  <div class="masthead__id">
+<!-- ── top bar ───────────────────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar__brand">
     <span class="mark">lc</span>
-    <h1>loopcrop</h1>
-    <p class="tagline">让对话页自己往下跑，产物落地成文件</p>
+    <span class="wordmark">loopcrop</span>
   </div>
-  <div class="conn" id="conn" data-state="down">
-    <span class="conn__dot"></span>
-    <span class="conn__text" id="connText">未连接</span>
+
+  <div class="topbar__run">
+    <span class="pill" id="phasePill" data-phase="idle">待机</span>
+    <span class="clock" id="clock"></span>
+    <span class="stat" id="statAsks">0 ask</span>
+    <span class="stat" id="statFiles">0 文件</span>
+  </div>
+
+  <div class="topbar__right">
+    <button class="ghost" id="btnProbe" type="button">刷新标签页</button>
+    <span class="conn" id="conn" data-state="down" title="bridge">
+      <i></i><span id="connText">未连接</span>
+    </span>
   </div>
 </header>
 
-<main class="stage">
+<div class="shell">
 
-  <!-- ── 运行台 ─────────────────────────────────────────────────────────── -->
-  <section class="run" aria-label="运行状态">
-    <div class="status" id="status" data-phase="idle">
-      <div class="status__head">
-        <p class="status__phase" id="statusPhase">待机</p>
-        <p class="status__elapsed" id="statusElapsed"></p>
-      </div>
-      <p class="status__turn">
-        <span class="num" id="statusTurn">0</span>
-        <span class="sep">/</span>
-        <span class="num dim" id="statusTarget">0</span>
-        <span class="unit">轮</span>
-      </p>
-      <div class="status__bar" id="statusBar"><i></i></div>
-      <p class="status__hint" id="statusHint"></p>
+  <!-- ── left rail: artifacts + stages ───────────────────────────────────── -->
+  <aside class="rail">
+    <div class="rail__tabs" role="tablist">
+      <button class="rail__tab is-on" data-view="files" type="button" role="tab">产物</button>
+      <button class="rail__tab" data-view="stages" type="button" role="tab">阶段</button>
     </div>
 
-    <div class="files" aria-labelledby="filesHead">
-      <div class="files__bar">
-        <h2 id="filesHead">产物</h2>
-        <p class="files__meta" id="filesMeta">—</p>
-      </div>
-      <ul class="files__list" id="filesList">
-        <li class="files__empty" id="filesEmpty">
-          还没有文件落地。连上浏览器、填好提示词，点「开始」。
-        </li>
+    <div class="rail__body" id="viewFiles">
+      <p class="rail__meta" id="filesMeta">—</p>
+      <ul class="tree" id="filesList">
+        <li class="tree__empty">还没有文件落地。</li>
       </ul>
     </div>
-  </section>
 
-  <!-- ── 控制 ───────────────────────────────────────────────────────────── -->
-  <aside class="panel" aria-label="配置">
-
-    <div class="field-group">
-      <div class="field-row">
-        <span class="field-label">目标标签页</span>
-        <button class="ghost" id="btnProbe" type="button">刷新</button>
-      </div>
-      <select id="tab">
-        <option value="">先连接浏览器</option>
-      </select>
+    <div class="rail__body is-hidden" id="viewStages">
+      <ol class="stages" id="stagesList">
+        <li class="tree__empty">这是单阶段运行，没有阶段划分。</li>
+      </ol>
     </div>
-
-    <div class="field-group">
-      <div class="field-row">
-        <span class="field-label">提示词</span>
-        <select id="preset" title="预设会覆盖下方提示词">
-          <option value="">预设…</option>
-          <option value="novel">小说续写（「继续」）</option>
-          <option value="translate">批量翻译</option>
-          <option value="repeat">重复 N 次</option>
-        </select>
-      </div>
-      <textarea id="prompt" rows="4" spellcheck="false">继续</textarea>
-      <p class="hint">每轮发给对话页的指令。可写 <code>{turn}</code>，运行时会替换成当前轮次。</p>
-    </div>
-
-    <div class="field-group fields">
-      <label class="field">
-        <span>输出目录</span>
-        <input id="out" type="text" value="./out" spellcheck="false">
-      </label>
-      <label class="field field--half">
-        <span>轮次上限</span>
-        <input id="turns" type="number" min="1" max="999" value="10">
-      </label>
-      <label class="field field--half">
-        <span>轮间隔（秒）</span>
-        <input id="between" type="number" min="0" max="600" value="5">
-      </label>
-    </div>
-
-    <div class="actions">
-      <button class="primary" id="btnStart" type="button" disabled>开始</button>
-      <button class="stop" id="btnStop" type="button" disabled>停止</button>
-    </div>
-
-    <p class="note">
-      停止只在当前这一轮写完之后生效；中途硬中断会浪费这一轮的产物。
-    </p>
   </aside>
-</main>
 
-<!-- ── 日志 ─────────────────────────────────────────────────────────────── -->
-<section class="log" aria-labelledby="logHead">
-  <div class="log__bar">
-    <h2 id="logHead">日志</h2>
-    <div class="log__tools">
-      <button class="ghost" id="btnClear" type="button">清屏</button>
-    </div>
-  </div>
-  <ol class="log__lines" id="logLines"></ol>
+  <!-- ── center: run panel + timeline ────────────────────────────────────── -->
+  <main class="center">
+
+    <section class="runner" id="runner">
+      <button class="runner__head" id="runnerToggle" type="button" aria-expanded="true">
+        <span class="runner__caret"></span>
+        <span class="runner__title">运行</span>
+        <span class="runner__summary" id="runnerSummary">继续 · 10 轮 · ./chapters</span>
+      </button>
+
+      <div class="runner__body" id="runnerBody">
+        <div class="row">
+          <label class="field field--grow">
+            <span>标签页</span>
+            <select id="tab"><option value="">先连接浏览器</option></select>
+          </label>
+          <label class="field">
+            <span>模式</span>
+            <select id="mode">
+              <option value="recipe">单提示词重复</option>
+              <option value="work">分阶段</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- recipe mode -->
+        <div class="row" id="recipeRow">
+          <label class="field field--grow">
+            <span>提示词</span>
+            <textarea id="prompt" rows="2" spellcheck="false">继续</textarea>
+          </label>
+        </div>
+
+        <!-- work mode -->
+        <div class="row" id="workRow">
+          <label class="field field--grow">
+            <span>work</span>
+            <select id="work">
+              <option value="novel">novel — 大纲 → 逐章正文 → 连续性检查</option>
+            </select>
+          </label>
+          <label class="field field--xs">
+            <span>题材</span>
+            <input id="genre" type="text" value="悬疑" spellcheck="false">
+          </label>
+          <label class="field field--xs">
+            <span>章数</span>
+            <input id="chapters" type="number" min="1" max="200" value="12">
+          </label>
+          <label class="field field--xs">
+            <span>ask 上限</span>
+            <input id="maxAsks" type="number" min="1" max="999" value="40">
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="field field--grow">
+            <span>输出目录</span>
+            <input id="out" type="text" value="./chapters" spellcheck="false">
+          </label>
+          <label class="field field--xs" id="turnsField">
+            <span>轮次上限</span>
+            <input id="turns" type="number" min="1" max="999" value="10">
+          </label>
+          <label class="field field--xs">
+            <span>轮间隔（秒）</span>
+            <input id="between" type="number" min="0" max="600" value="5">
+          </label>
+        </div>
+
+        <div class="row row--actions">
+          <button class="primary" id="btnStart" type="button" disabled>开始</button>
+          <button class="stop" id="btnStop" type="button" disabled>停止</button>
+          <p class="note" id="runNote">停止只在当前这一轮写完之后生效。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="timeline" aria-label="任务时间线">
+      <div class="timeline__bar">
+        <h2>时间线</h2>
+        <div class="timeline__tools">
+          <input class="search" id="search" type="search" placeholder="搜索全部回复…" spellcheck="false">
+          <span class="timeline__count" id="timelineCount"></span>
+        </div>
+      </div>
+      <ol class="asks" id="asks">
+        <li class="asks__empty" id="asksEmpty">
+          还没有 ask。连上浏览器、配置好，点「开始」。
+        </li>
+      </ol>
+    </section>
+  </main>
+</div>
+
+<!-- ── log drawer ────────────────────────────────────────────────────────── -->
+<section class="logdrawer" id="logDrawer">
+  <button class="logdrawer__head" id="logToggle" type="button" aria-expanded="false">
+    <span class="logdrawer__caret"></span>
+    <span>日志</span>
+    <span class="logdrawer__hint" id="logHint"></span>
+  </button>
+  <ol class="logdrawer__lines" id="logLines"></ol>
 </section>
+
+<!-- ── right slide-over detail ───────────────────────────────────────────── -->
+<div class="scrim" id="scrim" hidden></div>
+<aside class="detail" id="detail" aria-hidden="true">
+  <header class="detail__head">
+    <div class="detail__id">
+      <span class="detail__seq" id="detailSeq">#0</span>
+      <span class="detail__tag" id="detailTag"></span>
+    </div>
+    <div class="detail__tools">
+      <button class="ghost" id="btnRedo" type="button" title="截断到这里之前，之后的 ask 会重新发">从这里重做</button>
+      <button class="ghost" id="btnDetailClose" type="button" aria-label="关闭">✕</button>
+    </div>
+  </header>
+  <div class="detail__meta" id="detailMeta"></div>
+  <div class="detail__prompt" id="detailPrompt"></div>
+  <pre class="detail__text" id="detailText"></pre>
+</aside>
 
 <script src="/app.js" type="module"></script>
 </body>

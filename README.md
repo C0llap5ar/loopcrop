@@ -50,7 +50,11 @@ The engine, adapters, recipes and stop conditions are shared. Only the outer she
 
 **Userscript** — paste one file, no toolchain. Writes through the browser's download manager.
 **CLI** — Node, writes straight to disk, resumable, scriptable. Drives your existing browser through an extension bridge.
-**GUI** — `node gui/server.mjs`, then open `http://127.0.0.1:4317`. Same engine and bridge, but you pick the tab and type the prompt in a form instead of a terminal.
+**GUI** — `node gui/server.mjs`, then open `http://127.0.0.1:4317`. Three-pane workbench over the same core: journal timeline, stage progress, and the full reply on demand.
+
+The GUI and CLI share one thing the userscript cannot have: a journal on disk. That is
+why staged works (`--work`) and crash recovery are Node-only — a browser has nowhere to
+append to.
 
 ---
 
@@ -108,14 +112,40 @@ manifest remains the artifact index.
 node gui/server.mjs      # or: npm run gui
 ```
 
-Open `http://127.0.0.1:4317`, press **连接** to probe the bridge and list tabs, pick one, type the prompt, press **开始**. Progress streams over SSE — you can close the tab and the run keeps going in the Node process.
-
-The GUI is the same engine as the CLI. The prompt box is the recipe: whatever you type is sent every turn, with `{turn}` substituted for the turn number. Stop it with **停止**, or set a turn count.
+Open `http://127.0.0.1:4317`, press **连接** to probe the bridge and list tabs, then pick
+a mode and start. Progress streams over SSE — you can close the tab and the run keeps
+going in the Node process.
 
 ```bash
 # config persists in .loopcrop-gui.json; port comes from the environment
 PORT=4318 node gui/server.mjs
 ```
+
+It is a three-pane workbench over the same core:
+
+| Pane | Holds |
+| --- | --- |
+| left rail | **产物** (the files this run wrote) or **阶段** (per-stage progress bars) |
+| centre | the run form, and the ask timeline — one row per journaled ask |
+| bottom | the log, folded away until you open it |
+
+The timeline is the journal. Each row shows its sequence number, the check verdict
+(`✓` ok, `↻` retry, `⏸` pause, `✕` abort), the stage and item it belonged to, how long
+it took and how many characters came back. Click a row to slide the full reply out from
+the right; it renders as plain monospace text, not markdown, because the artifacts are
+`.txt` and reformatting them would mangle the prose. Only one reply is open at a time, so
+a 600,000-character run never loads itself into the DOM at once.
+
+Search filters on sequence, prompt, stage, filename and the bodies you have already
+opened. Bodies are fetched on demand — the list endpoint returns summaries only.
+
+If the reply was a bad one, **重做** truncates the journal to just before that ask and
+re-runs from there. The truncated asks are sent again; everything before them replays
+from disk.
+
+The GUI can drive either a recipe (one prompt, repeated) or a built-in work
+(`--work novel`: outline → chapter by chapter → continuity review). Work mode shows the
+stage rail and needs no prompt text at all.
 
 ## Recipes
 
@@ -280,7 +310,11 @@ core/
     chatgpt.js       the only site-specific code
   recipes/index.js   built-in recipes, built-in works + resolvers
 cli/                 Node front-end + extension-bridge transport
-gui/                 local web front-end (server + static UI, SSE)
+gui/                 local web front-end
+  server.mjs             HTTP + SSE, journal and work wiring
+  public/index.html      three-pane shell
+  public/app.js          timeline, detail pane, run form
+  public/app.css         light theme
 userscript/          browser front-end + floating HUD
 scripts/
   build-userscript.mjs   inlines the shared core into dist/loopcrop.user.js
@@ -295,7 +329,7 @@ The build step is a ~90-line dependency-free ESM inliner rather than a bundler, 
 
 ## Verification
 
-`npm test` runs 53 unit tests with fake adapters, journals and a fake transport — fast,
+`npm test` runs 56 unit tests with fake adapters, journals and a fake transport — fast,
 and they pin the parts that are easy to get subtly wrong: turn accounting, dedupe,
 atomic manifest writes, base64 byte handling, stop conditions, journal persistence,
 idempotent replay, source expansion, check verdicts, guard budgets, and the work resume
@@ -304,6 +338,12 @@ asserts every prompt was sent exactly once; a lost manifest is rebuilt from jour
 records without re-saving existing files. Two work tests do the same for staged runs: a
 crash between rounds resumes at the next round rather than skipping ahead, and a crash
 inside a retry budget spends the remaining retry instead of restarting the round.
+
+Three of those tests cover the GUI without a browser: every class the client script
+creates must have a CSS rule, every element id it reaches for must exist in the markup,
+and no journal body may reach `innerHTML` unescaped. That last one matters because the
+reply text comes from a remote model — treating it as markup would make the detail pane
+an injection sink.
 
 The live smoke check lives in `live/`, outside the test runner's discovery glob,
 because it spends real quota against a real browser and must never run in CI.
