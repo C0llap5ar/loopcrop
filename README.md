@@ -190,6 +190,9 @@ The build step is a ~90-line dependency-free ESM inliner rather than a bundler, 
 they pin the parts that are easy to get subtly wrong: turn accounting, dedupe,
 atomic manifest writes, base64 byte handling, stop conditions.
 
+The live smoke check lives in `live/`, outside the test runner's discovery glob,
+because it spends real quota against a real browser and must never run in CI.
+
 Two things unit tests structurally cannot prove, both of which bit during
 development:
 

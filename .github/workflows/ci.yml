@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - run: node --test test/
+      - run: node --test
       - run: node scripts/build-userscript.mjs
       - name: userscript is up to date
         run: git diff --exit-code dist/loopcrop.user.js

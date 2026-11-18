@@ -39,8 +39,8 @@
     "build": "node scripts/build-userscript.mjs",
     "start": "node cli/loop.mjs",
     "gui": "node gui/server.mjs",
-    "test": "node --test test/",
-    "test:live": "node test/smoke-prompt-integrity.mjs",
+    "test": "node --test",
+    "test:live": "node live/smoke-prompt-integrity.mjs",
     "smoke": "node cli/loop.mjs --recipe ./examples/smoke-recipe.mjs --out ./test-out --turns 1"
   },
   "engines": {
