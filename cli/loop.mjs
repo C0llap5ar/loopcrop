@@ -17,10 +17,11 @@
  */
 
 import { runLoop } from '../core/engine.js';
+import { runWork } from '../core/work.js';
 import { createChatGptAdapter } from '../core/adapters/chatgpt.js';
 import { normalizeHarvest } from '../core/protocol.js';
 import { createFsSink } from '../core/sinks-node.js';
-import { resolveRecipe } from '../core/recipes/index.js';
+import { resolveRecipe, resolveWork } from '../core/recipes/index.js';
 import { ManifestStore } from '../core/manifest.js';
 import { Journal } from '../core/journal.js';
 import { createSession } from '../core/session.js';
@@ -53,18 +54,29 @@ export async function main(argv) {
     if (!probe.ok) throw new Error(`not a supported conversation page: ${probe.url}`);
     logger.info(`adapter chatgpt · conversation ${probe.conversationId}`);
 
-    const recipe = await resolveRecipe(args.recipe, {
+    const work = args.work
+      ? await resolveWork(args.work, {
+        outDir: args.out,
+        genre: args.genre,
+        chapters: args.chapters,
+        maxAsks: args.maxAsks,
+        maxTurns: args.turns,
+      })
+      : null;
+
+    const recipe = work ? null : await resolveRecipe(args.recipe, {
       outDir: args.out,
       maxTurns: args.turns,
     });
 
-    const outDir = args.out ?? recipe.outDir;
+    const outDir = args.out ?? (work ? work.outDir : recipe.outDir);
     await mkdir(outDir, { recursive: true });
 
+    const runName = work ? work.name : recipe.name;
     const manifest = await ManifestStore.open({
       dir: outDir,
       runId: new Date().toISOString().replace(/[:.]/g, '-'),
-      recipe,
+      recipe: { name: runName },
     });
     logger.info(`out: ${outDir} · resuming at turn ${manifest.turnsCompleted + 1}`);
 
@@ -108,26 +120,36 @@ export async function main(argv) {
     // of recipe starts a fresh history instead of mis-replaying another one's turns.
     const journal = await Journal.open({
       dir: join(outDir, '.loopcrop', 'journal'),
-      workId: recipe.name ?? 'run',
+      workId: runName ?? 'run',
     });
     const session = createSession({ journal });
 
-    const result = await runLoop({
-      adapter,
-      sink: createFsSink({ dir: outDir, logger }),
-      recipe,
-      manifest,
-      session,
-      logger,
-      signal: ac.signal,
-      maxTurns: args.turns ?? 200,
-      pacing: {
-        pollMs: args.pollMs ?? 2500,
-        betweenTurnsMs: args.between ?? 5000,
-        jitterMs: args.jitter ?? 3000,
-        stallMs: (args.stallMin ?? 20) * 60_000,
-      },
-    });
+    const pacing = {
+      pollMs: args.pollMs ?? 2500,
+      betweenTurnsMs: args.between ?? 5000,
+      jitterMs: args.jitter ?? 3000,
+      stallMs: (args.stallMin ?? 20) * 60_000,
+    };
+    const sink = createFsSink({ dir: outDir, logger });
+
+    const result = work
+      ? await runWork({
+        work, adapter, sink, session, logger, manifest,
+        signal: ac.signal,
+        pacing,
+        maxTurns: args.turns ?? 200,
+      })
+      : await runLoop({
+        adapter,
+        sink,
+        recipe,
+        manifest,
+        session,
+        logger,
+        signal: ac.signal,
+        maxTurns: args.turns ?? 200,
+        pacing,
+      });
 
     process.off('SIGINT', onSig);
     process.off('SIGTERM', onSig);
@@ -319,7 +341,11 @@ USAGE
 
 OPTIONS
   --tab <id>            target tab id (default: the first chatgpt.com tab)
-  --recipe <spec>       novel | translate | repeat | ./my-recipe.mjs | inline JSON
+  --work <spec>         staged run: novel | ./my-work.mjs | inline JSON (see below)
+  --genre <name>        --work novel: genre used in the outline prompt
+  --chapters <n>        --work novel: how many chapters to write
+  --max-asks <n>        --work novel: ask budget guard
+  --recipe <spec>       single-stage: novel | translate | repeat | ./my-recipe.mjs | inline JSON
   --out <dir>           output directory (default: from the recipe)
   --turns <n>           hard ceiling on turns (default 200)
   --between <ms>        base delay between turns (default 5000)
@@ -333,6 +359,20 @@ OPTIONS
   --json                machine-readable log lines
   --quiet               errors only
   --help                this text
+
+WORK VS RECIPE
+  A recipe is one prompt repeated. A work is ordered stages, each with its own
+  source, prompt, check and retry budget:
+
+    loopcrop --work novel --chapters 12
+    loopcrop --work '{"name":"t","stages":[{"name":"s","source":{"list":["a","b"]},"prompt":"翻译 {item}"}]}'
+
+  Stage fields: name, source (single|list|csv|jsonl|dynamic), prompt (string with
+  {item}/{round}/{stage} or a function), repeat, retry, check, done.
+  Check statuses: ok | retry | pause | abort. Built-ins: minLength, mustMatch,
+  jsonParseable, noRefusal, hasFile, hasBlock, allOf, anyOf.
+  Work guards: {asks, duration, artifacts, failures, silence} — a guard pauses
+  after the in-flight ask is journaled, so nothing is lost or re-sent.
 
 REQUIRES
   A browser extension bridge exposing /health, /pair and a /ws control socket

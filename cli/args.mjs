@@ -4,6 +4,7 @@ export function parseArgs(argv) {
   const takesValue = new Set([
     'tab', 'recipe', 'out', 'turns', 'between', 'jitter', 'poll',
     'stall-min', 'bridge-host', 'bridge-port',
+    'work', 'genre', 'chapters', 'max-asks',
   ]);
   const flags = new Set(['dry-run', 'adopt', 'json', 'quiet', 'help']);
 
@@ -15,7 +16,7 @@ export function parseArgs(argv) {
     if (takesValue.has(key)) {
       const value = argv[++i];
       if (value === undefined) throw new Error(`--${key} needs a value`);
-      if (['turns', 'between', 'jitter', 'poll', 'stall-min', 'bridge-port'].includes(key)) {
+      if (['turns', 'between', 'jitter', 'poll', 'stall-min', 'bridge-port', 'chapters', 'max-asks'].includes(key)) {
         const n = Number(value);
         if (!Number.isFinite(n)) throw new Error(`--${key} must be a number, got "${value}"`);
         out[camel(key)] = n;

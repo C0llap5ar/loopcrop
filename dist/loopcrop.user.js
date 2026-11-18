@@ -304,6 +304,21 @@
       /** The recorded event for an ask, or null. */
       get: (seq) => journal?.get?.(seq) ?? null,
 
+      /** All recorded events in seq order (used by the work driver to resume a cursor). */
+      all: () => journal?.all?.() ?? [],
+
+      /**
+       * Merge extra fields into an already recorded ask (stage cursor, check verdict).
+       * The line is appended again; readers keep the newest event for that seq.
+       */
+      async annotate(seq, patch) {
+        const current = journal?.get?.(seq) ?? null;
+        if (!current) return null;
+        const event = { ...current, ...patch };
+        await journal.append(event);
+        return event;
+      },
+
       /**
        * Run `doAsk` at most once for `seq`.
        *
@@ -1110,6 +1125,71 @@
 
   /** Escape hatch: bring your own prompt/stop/outDir. */
   const custom = (opts) => normalize(opts);
+
+  // ── Work presets (staged) ──────────────────────────────────────────────────────
+
+  /**
+   * The same novel loop, but as three honest stages instead of one blind "继续".
+   *
+   * The single-turn version works because a good conversation remembers its own plan.
+   * A fresh conversation does not, so this preset makes the plan explicit: a skeleton
+   * first, then chapters driven by that skeleton, then a continuity pass over what was
+   * actually written. Each stage is still plain data, and the run stays resumable
+   * because every ask gets a stable seq.
+   */
+  const novelWork = (opts = {}) => {
+    // The outline prompt is built with real values instead of `{placeholders}`, because
+    // interpolation only knows per-ask context (item, stage, round) — a genre is a
+    // recipe option, and leaving `{genre}` in the text is how a prompt silently ships
+    // with a literal brace in it.
+    const genre = opts.genre ?? '悬疑';
+    const chapters = opts.chapters ?? 12;
+    return {
+      name: opts.name ?? 'novel',
+      outDir: opts.outDir ?? './chapters',
+      description: 'Novel in three stages: outline, one chapter per ask, then a continuity pass.',
+      stages: [
+        {
+          name: 'outline',
+          source: { single: true },
+          prompt: opts.outlinePrompt
+            ?? `先不要写正文。为一部${genre}小说写一份分卷大纲：给出书名、主角、核心冲突、以及前 ${chapters} 章的逐章一句话梗概。只输出大纲。`,
+          check: { minLength: 200 },
+          retry: 1,
+        },
+        {
+          name: 'body',
+          source: { dynamic: () => Array.from({ length: chapters }, (_, i) => ({ id: String(i + 1), value: i + 1 })) },
+          prompt: opts.chapterPrompt
+            ?? '按大纲写第 {item} 章正文。保持与前文一致，不要复述大纲，不要写结尾总结。写完后保存为章节文件。',
+          check: { minLength: 800 },
+          retry: 1,
+        },
+        {
+          name: 'continuity',
+          source: { single: true },
+          prompt: opts.continuityPrompt
+            ?? '通读你写的全部章节，列出设定冲突、人物前后不一致、伏笔未回收的地方，并给出修订建议。只输出问题清单。',
+          check: { minLength: 100 },
+        },
+      ],
+      guards: { asks: opts.maxAsks ?? 40, failures: 3 },
+    };
+  };
+  const workPresets = { novel: novelWork };
+
+  /** Resolve `--work novel` / `--work ./my-work.mjs` / inline JSON into a work object. */
+  async function resolveWork(spec, opts = {}) {
+    if (spec && typeof spec === 'object') return spec;
+    const name = String(spec);
+    if (workPresets[name]) return workPresets[name](opts);
+    if (/\.(mjs|js|json)$/i.test(name)) {
+      const mod = await import(new URL(name, `file://${process.cwd()}/`).href);
+      return mod.default ?? mod;
+    }
+    if (name.trim().startsWith('{')) return JSON.parse(name);
+    throw new Error(`unknown work "${name}". built-in works: ${Object.keys(workPresets).join(', ')}`);
+  }
   const builtins = { novel, translate, repeat, custom };
 
   /** Resolve `--recipe novel` / `--recipe ./my-recipe.mjs` / inline JSON. */

@@ -17,6 +17,15 @@ export function createLogger({ quiet = false, json = false } = {}) {
     warn: (m) => emit('warn', m),
     error: (m) => emit('error', m),
     turn: (n, info) => emit('info', `turn ${n} settled · ${info.saved} new file(s) of ${info.artifacts} seen`, { turn: n, ...info }),
+    /** Stage progress for `--work`; the seq is the durable identity of this ask. */
+    work: ({ stage, itemId, seq, event, result }) => {
+      const chars = typeof event?.text === 'string' ? `${event.text.length} ch` : 'no text';
+      const files = event?.files?.length ?? 0;
+      const dur = event?.dur ? `${Math.round(event.dur / 1000)}s` : '?';
+      emit('info', `[${stage}] item ${itemId} · ask #${seq} · ${dur} · ${chars} · ${files} file(s)`, {
+        stage, itemId, seq, files, resultCode: result?.code,
+      });
+    },
     summary: (r) => {
       if (json) { emit('info', 'summary', { result: r }); return; }
       process.stdout.write('\n' + '─'.repeat(52) + '\n');

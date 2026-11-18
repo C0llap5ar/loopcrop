@@ -1,6 +1,6 @@
 {
   "name": "loopcrop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Turn any AI chat web UI into a repeatable prompt loop: send, wait, harvest the files it produced, repeat.",
   "type": "module",
   "license": "MIT",

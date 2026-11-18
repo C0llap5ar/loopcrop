@@ -41,6 +41,7 @@ Long-running generation tasks — serialized fiction, batch translation, dataset
 | survives a process crash | ❌ | ✅ journal replays completed turns without re-sending |
 | remembers the replies | ❌ | ✅ journal keeps full text + blocks + files |
 | stops on a condition | count only | markers, patterns, dry streaks, wall clock |
+| plans across rounds | one prompt forever | staged works: outline → per-item → review |
 | pacing / rate limits | fixed sleep | jittered backoff with error budgets |
 
 ## Three front-ends, one core
@@ -89,15 +90,17 @@ loopcrop --adopt --out ./chapters
 # run the fiction preset
 loopcrop --recipe novel --out ./chapters --turns 20
 
+# or run it as staged work: outline → one ask per chapter → continuity pass
+loopcrop --work novel --chapters 12 --genre 悬疑 --out ./chapters
+
 # resume: rerun the same command; completed asks replay from the journal, never re-send
 ```
 
-Every CLI run also writes an append-only journal at `.loopcrop/journal/<recipe-name>.jsonl`
+Every CLI run also writes an append-only journal at `.loopcrop/journal/<run-name>.jsonl`
 inside the output directory. Each completed ask records its prompt, duration, full reply
 text, content blocks and saved files. On restart, completed sequence numbers are replayed
 locally; only unfinished asks are sent. The journal is the progress truth, while the
 manifest remains the artifact index.
-```
 
 ## Quick start — GUI
 
@@ -150,6 +153,92 @@ Built in: `novel`, `translate`, `repeat`, `custom`.
 
 ---
 
+## Works — staged runs
+
+A recipe is one prompt repeated. A **work** is ordered stages, and each stage owns its
+own source, prompt, check and retry budget. Use `--work` instead of `--recipe`:
+
+```bash
+loopcrop --work novel --chapters 12 --genre 悬疑
+```
+
+That preset is the honest version of the fiction loop:
+
+| stage | source | prompt | check |
+|---|---|---|---|
+| `outline` | one item | "写分卷大纲，不要正文" | ≥ 200 chars |
+| `body` | one item per chapter | "按大纲写第 {item} 章" | ≥ 800 chars |
+| `continuity` | one item | "通读全文，列出冲突" | ≥ 100 chars |
+
+The one-stage `--recipe novel` still exists and still sends `继续` every turn. It works
+when the conversation already remembers its own plan; a fresh conversation does not,
+which is exactly what the staged form fixes.
+
+### Stage fields
+
+```js
+{
+  name: 'body',
+  source: { dynamic: () => [...], },      // single | list | csv | jsonl | dynamic | function
+  prompt: '按大纲写第 {item} 章',           // string with {item} {round} {stage} {total}, or a function
+  repeat: 12,                             // how many times to ask per source item
+  retry: 1,                               // extra asks allowed when check says retry
+  check: { minLength: 800 },              // ok | retry | pause | abort
+  done: null,                             // optional early-exit condition for the stage
+}
+```
+
+### Sources
+
+| source | expands to |
+|---|---|
+| `{ single: value }` | one item |
+| `{ list: [...] }` | one item per element |
+| `{ csv: 'text' }` | one item per row, keyed by the header row |
+| `{ jsonl: 'text' }` | one item per parsed line |
+| `{ dynamic: () => [...] }` | whatever the function returns, including a promise |
+| a bare string or array | shorthand for `single` / `list` |
+
+### Checks
+
+A check runs after every ask and returns one of four verdicts:
+
+| verdict | meaning |
+|---|---|
+| `ok` | accept this round and move on |
+| `retry` | spend one retry from `stage.retry`, then give up as `paused` |
+| `pause` | stop the run now, keeping everything journaled |
+| `abort` | stop and mark the run aborted |
+
+Built-ins: `minLength`, `mustMatch`, `jsonParseable`, `noRefusal`, `hasFile`,
+`hasBlock`, plus `allOf` / `anyOf` to combine them. Any check accepts
+`onFail: 'pause' | 'abort'` to override the default `retry`.
+
+### Guards
+
+Guards are budgets, not destinations. They are evaluated **between** asks, so an
+in-flight turn always finishes and is journaled before the run pauses.
+
+```js
+guards: { asks: 40, duration: 3_600_000, artifacts: 0, failures: 3, silence: 5 }
+```
+
+`asks` counts journaled asks, `duration` is wall-clock ms, `artifacts` counts files
+saved, `failures` counts consecutive send errors, and `silence` counts consecutive asks
+that produced no files. A guard ends the run as `paused`, never `failed` — pause means
+"come back later", and rerunning the same command resumes from the journal.
+
+### Resuming a work
+
+The resume cursor is derived from the journal, not recomputed from the recipe. Each
+journal row records its stage, item, repetition round and retry slot, so a crash
+mid-`repeat` resumes at the next round instead of skipping ahead, and a crash inside a
+retry budget spends the remaining retry instead of restarting the round. Retries are
+budgeted per repetition: `repeat: 3, retry: 1` means three chapters, each allowed one
+retry.
+
+---
+
 ## Writing an adapter
 
 An adapter is four methods. It runs inside the page, so it inherits the session and may call the site's private endpoints.
@@ -179,13 +268,17 @@ core/
   engine.js          the loop — the only file that knows the order of things
   journal.js         append-only ask history + full replies (Node)
   session.js         idempotent ask() / replayable clock, injected by front-ends
+  work.js            staged runs: source → prompt → check → retry, resumable
+  sources.js         single / list / csv / jsonl / dynamic expansion
+  checks.js          ok / retry / pause / abort verdicts
+  guards.js          asks / duration / artifacts / failures / silence budgets
   stops.js           stop conditions as pure predicates
   manifest.js        crash-safe run state (Node)
   sinks.js           browser sinks (download, memory)
   sinks-node.js      Node sink (filesystem, atomic, collision-safe)
   adapters/
     chatgpt.js       the only site-specific code
-  recipes/index.js   built-in recipes + resolver
+  recipes/index.js   built-in recipes, built-in works + resolvers
 cli/                 Node front-end + extension-bridge transport
 gui/                 local web front-end (server + static UI, SSE)
 userscript/          browser front-end + floating HUD
@@ -194,16 +287,23 @@ scripts/
 dist/                built userscript (committed so users can install without a build)
 ```
 
+`work.js`, `sources.js`, `checks.js` and `guards.js` are deliberately **not** in the
+userscript bundle: the browser build only carries the recipe loop, because a staged
+work needs a filesystem-backed journal to resume from.
+
 The build step is a ~90-line dependency-free ESM inliner rather than a bundler, because the module graph is ten files and a lockfile for that is silly.
 
 ## Verification
 
-`npm test` runs 37 unit tests with fake adapters, journals and a fake transport — fast,
+`npm test` runs 53 unit tests with fake adapters, journals and a fake transport — fast,
 and they pin the parts that are easy to get subtly wrong: turn accounting, dedupe,
-atomic manifest writes, base64 byte handling, stop conditions, journal persistence and
-idempotent replay. The 100-ask crash test aborts mid-run, reopens the journal, finishes
-the run and asserts every prompt was sent exactly once; a lost manifest is rebuilt from
-journal records without re-saving existing files.
+atomic manifest writes, base64 byte handling, stop conditions, journal persistence,
+idempotent replay, source expansion, check verdicts, guard budgets, and the work resume
+cursor. The 100-ask crash test aborts mid-run, reopens the journal, finishes the run and
+asserts every prompt was sent exactly once; a lost manifest is rebuilt from journal
+records without re-saving existing files. Two work tests do the same for staged runs: a
+crash between rounds resumes at the next round rather than skipping ahead, and a crash
+inside a retry budget spends the remaining retry instead of restarting the round.
 
 The live smoke check lives in `live/`, outside the test runner's discovery glob,
 because it spends real quota against a real browser and must never run in CI.
@@ -228,6 +328,9 @@ click that misses leaves the text in place — and retrying then sends it twice.
 ## Limitations, stated plainly
 
 - **One conversation per run.** Tab switching mid-run is not modelled.
+- **Staged works are a Node-only feature.** The userscript carries the recipe loop, not
+  `work.js`, because resuming a stage needs a filesystem journal. Browser users get
+  `repeat`, not `--work`.
 - **A fresh chat is a supported starting point.** Its conversation id only appears in
   the URL after the first message is accepted, so both `probe()` and `status()` treat
   "no id yet" as a valid state and wait briefly, rather than as an error.

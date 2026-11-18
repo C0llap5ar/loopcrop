@@ -29,6 +29,21 @@ export function createSession({ journal = null, now = () => Date.now() } = {}) {
     /** The recorded event for an ask, or null. */
     get: (seq) => journal?.get?.(seq) ?? null,
 
+    /** All recorded events in seq order (used by the work driver to resume a cursor). */
+    all: () => journal?.all?.() ?? [],
+
+    /**
+     * Merge extra fields into an already recorded ask (stage cursor, check verdict).
+     * The line is appended again; readers keep the newest event for that seq.
+     */
+    async annotate(seq, patch) {
+      const current = journal?.get?.(seq) ?? null;
+      if (!current) return null;
+      const event = { ...current, ...patch };
+      await journal.append(event);
+      return event;
+    },
+
     /**
      * Run `doAsk` at most once for `seq`.
      *
