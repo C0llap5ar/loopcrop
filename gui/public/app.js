@@ -29,7 +29,7 @@ const els = {
 
   logToggle: $('logToggle'), logLines: $('logLines'), logHint: $('logHint'),
 
-  scrim: $('scrim'), detail: $('detail'),
+  detail: $('detail'),
   detailSeq: $('detailSeq'), detailTag: $('detailTag'), detailMeta: $('detailMeta'),
   detailPrompt: $('detailPrompt'), detailText: $('detailText'),
   btnDetailClose: $('btnDetailClose'), btnRedo: $('btnRedo'),
@@ -331,14 +331,12 @@ async function openDetail(seq) {
   }
 
   els.detail.setAttribute('aria-hidden', 'false');
-  els.scrim.hidden = false;
   els.detailText.scrollTop = 0;
 }
 
 function closeDetail() {
   openSeq = null;
   els.detail.setAttribute('aria-hidden', 'true');
-  els.scrim.hidden = true;
   paintAsks();
 }
 
@@ -453,7 +451,6 @@ els.filesList.addEventListener('click', (e) => {
 
 // detail
 els.btnDetailClose.addEventListener('click', closeDetail);
-els.scrim.addEventListener('click', closeDetail);
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && openSeq != null) closeDetail();
 });

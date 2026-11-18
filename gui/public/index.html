@@ -146,6 +146,23 @@
       </ol>
     </section>
   </main>
+
+  <!-- ── right pane: the reply you opened ──────────────────────────────── -->
+  <aside class="detail" id="detail" aria-hidden="true">
+    <header class="detail__head">
+      <div class="detail__id">
+        <span class="detail__seq" id="detailSeq">#0</span>
+        <span class="detail__tag" id="detailTag"></span>
+      </div>
+      <div class="detail__tools">
+        <button class="ghost" id="btnRedo" type="button" title="截断到这里之前，之后的 ask 会重新发">从这里重做</button>
+        <button class="ghost" id="btnDetailClose" type="button" aria-label="关闭">✕</button>
+      </div>
+    </header>
+    <div class="detail__meta" id="detailMeta"></div>
+    <div class="detail__prompt" id="detailPrompt"></div>
+    <pre class="detail__text" id="detailText"></pre>
+  </aside>
 </div>
 
 <!-- ── log drawer ────────────────────────────────────────────────────────── -->
@@ -157,24 +174,6 @@
   </button>
   <ol class="logdrawer__lines" id="logLines"></ol>
 </section>
-
-<!-- ── right slide-over detail ───────────────────────────────────────────── -->
-<div class="scrim" id="scrim" hidden></div>
-<aside class="detail" id="detail" aria-hidden="true">
-  <header class="detail__head">
-    <div class="detail__id">
-      <span class="detail__seq" id="detailSeq">#0</span>
-      <span class="detail__tag" id="detailTag"></span>
-    </div>
-    <div class="detail__tools">
-      <button class="ghost" id="btnRedo" type="button" title="截断到这里之前，之后的 ask 会重新发">从这里重做</button>
-      <button class="ghost" id="btnDetailClose" type="button" aria-label="关闭">✕</button>
-    </div>
-  </header>
-  <div class="detail__meta" id="detailMeta"></div>
-  <div class="detail__prompt" id="detailPrompt"></div>
-  <pre class="detail__text" id="detailText"></pre>
-</aside>
 
 <script src="/app.js" type="module"></script>
 </body>

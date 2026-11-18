@@ -187,7 +187,9 @@ button { font: inherit; color: inherit; }
 
 .shell {
   display: grid;
-  grid-template-columns: var(--rail) 1fr;
+  /* rail | timeline | detail — the detail column is auto so it collapses to 0
+     when the pane is closed and takes the timeline's space when it opens. */
+  grid-template-columns: var(--rail) 1fr auto;
   min-height: 0;
   overflow: hidden;
 }
@@ -327,6 +329,8 @@ button { font: inherit; color: inherit; }
   white-space: nowrap;
 }
 .stage__meta {
+  grid-column: 2;
+  margin-top: 1px;
   font-size: 11px;
   color: var(--muted-2);
   font-variant-numeric: tabular-nums;
@@ -422,9 +426,12 @@ button { font: inherit; color: inherit; }
 .row {
   display: flex;
   align-items: flex-end;
-  gap: 10px;
+  gap: 8px 10px;
   flex-wrap: wrap;
 }
+/* display:flex above beats the UA rule for [hidden], so restate it. Without this
+   both mode rows show at once and the prompt box appears in work mode. */
+.row[hidden] { display: none; }
 .row--actions { align-items: center; margin-top: 2px; }
 
 .field {
@@ -433,8 +440,10 @@ button { font: inherit; color: inherit; }
   gap: 4px;
   min-width: 0;
 }
-.field--grow { flex: 1 1 220px; }
-.field--xs { flex: 0 0 96px; }
+/* Grow fields share the row; the fixed ones keep their own width and drop to a
+   new line together when the detail pane narrows the form. */
+.field--grow { flex: 1 1 240px; }
+.field--xs { flex: 0 1 92px; min-width: 72px; }
 
 .field > span {
   font-size: 11.5px;
@@ -749,35 +758,25 @@ body[data-log="open"] .logdrawer__lines { display: block; }
 .logdrawer__lines li[data-level="warn"] span { color: #b45309; }
 .logdrawer__lines li[data-level="error"] span { color: var(--danger); }
 
-/* ── detail slide-over ─────────────────────────────────────────────────── */
-
-.scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  background: rgba(15,23,42,.18);
-  animation: fade .16s ease;
-}
-.scrim[hidden] { display: none; }
-@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+/* ── detail pane ────────────────────────────────────────────────────────
+   A real third column, not a slide-over: opening a reply narrows the timeline
+   instead of covering it, so the ask you clicked stays in view while you read.
+   The collapsible track animates on grid-template-columns, which is why the
+   pane keeps its own width rather than the shell owning it. */
 
 .detail {
-  position: fixed;
-  top: 0; right: 0; bottom: 0;
-  z-index: 50;
-  width: min(760px, 62vw);
   display: flex;
   flex-direction: column;
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
   background: var(--card);
-  border-left: 1px solid var(--border);
-  box-shadow: var(--shadow-lg);
-  transform: translateX(100%);
-  transition: transform .2s cubic-bezier(.32,.72,0,1);
-  visibility: hidden;
+  border-left: 0 solid var(--border);
+  transition: width .2s cubic-bezier(.32,.72,0,1), border-left-width .2s ease;
 }
 .detail[aria-hidden="false"] {
-  transform: translateX(0);
-  visibility: visible;
+  width: min(720px, 48vw);
+  border-left-width: 1px;
 }
 
 .detail__head {
@@ -851,7 +850,7 @@ body[data-log="open"] .logdrawer__lines { display: block; }
 
 @media (max-width: 1080px) {
   :root { --rail: 210px; }
-  .detail { width: min(680px, 78vw); }
+  .detail[aria-hidden="false"] { width: min(680px, 78vw); }
 }
 
 @media (max-width: 860px) {
@@ -867,6 +866,19 @@ body[data-log="open"] .logdrawer__lines { display: block; }
   .rail__tab { flex: 0 0 auto; border-bottom: 0; border-right: 2px solid transparent; }
   .rail__tab.is-on { border-right-color: var(--accent); border-bottom-color: transparent; }
   .rail__body { padding: 6px; }
-  .detail { width: 100vw; }
+
+  /* There is no room for three panes here, and squeezing the timeline to zero
+     would hide the very list you clicked from. So on narrow screens the reply
+     becomes a full-height overlay above everything, and the ✕ / Esc closes it. */
+  .detail {
+    position: fixed;
+    inset: var(--topbar) 0 0 0;
+    z-index: 50;
+    width: auto;
+    border-left-width: 0;
+  }
+  .detail[aria-hidden="true"] { display: none; }
+  .detail[aria-hidden="false"] { width: auto; }
+
   .field--xs { flex: 1 1 80px; }
 }
