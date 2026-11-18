@@ -24,7 +24,7 @@
     "batch-generation"
   ],
   "bin": {
-    "loopcrop": "./cli/loop.mjs"
+    "loopcrop": "cli/loop.mjs"
   },
   "files": [
     "core",
