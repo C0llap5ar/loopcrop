@@ -44,7 +44,16 @@ export async function main(argv) {
   const transport = await openTransport(args);
   try {
     const tab = await transport.pickTab(args.tab);
-    if (!tab) throw new Error('no usable tab found — open the conversation you want to loop');
+    if (!tab) {
+      const visible = await transport.listTabs().catch(() => []);
+      const web = visible.filter((t) => /^https?:/i.test(t.url ?? ''));
+      const seen = web.length
+        ? `\n  web tabs: ${web.map((t) => `${t.id} ${t.title || t.url}`).join('\n            ')}`
+        : '\n  no attachable web tabs found';
+      throw new Error(
+        `no usable tab found — open the chatgpt.com conversation you want to loop, or pass --tab <id>${seen}`,
+      );
+    }
 
     logger.info(`bridge: ${transport.describe()}`);
     logger.info(`tab ${tab.id}: ${tab.title}`);
@@ -306,10 +315,13 @@ export async function openTransport(args) {
       const r = await request('list_tabs');
       const list = r.tabs ?? [];
       if (explicit) return list.find((t) => String(t.id) === String(explicit)) ?? null;
-      return list.find((t) => /chatgpt\.com/.test(t.url))
-        ?? list.find((t) => t.active)
-        ?? list[0]
-        ?? null;
+      const chat = list.find((t) => /chatgpt\.com/.test(t.url));
+      if (chat) return chat;
+      // A privileged page (edge://, chrome://, devtools://, extension pages) cannot be
+      // attached over CDP, so falling back to one produces a bridge-side "outcome is
+      // uncertain" error that hides the real cause. Only fall back to a real web page.
+      const web = list.filter((t) => /^https?:/i.test(t.url ?? ''));
+      return web.find((t) => t.active) ?? web[0] ?? null;
     },
     async evaluate(tabId, expression) {
       const r = await request('evaluate', { tabId, expression });

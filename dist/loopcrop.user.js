@@ -1178,14 +1178,29 @@
   };
   const workPresets = { novel: novelWork };
 
+  /** Read a work/recipe off disk: .json is data, .mjs/.js is code with a default export. */
+  async function importSpecFile(name) {
+    // Compose the URL by hand instead of with node:url/node:path: this module is
+    // inlined into the userscript bundle and the build only strips relative imports,
+    // so a Node builtin here would leak into the browser file. Prefixing "file:///"
+    // also stops a Windows path like C:\x\work.json parsing as the scheme "c:".
+    const absolute = /^([a-zA-Z]:[\\/]|[\\/])/.test(name) ? name : `${process.cwd()}/${name}`;
+    const url = `file:///${encodeURI(absolute.replace(/\\/g, '/')).replace(/^\/+/, '')}`;
+    // Node >=22 requires the JSON import attribute; without it import() throws
+    // "needs an import attribute of type: json" even for a perfectly valid file.
+    const mod = /\.json$/i.test(name)
+      ? await import(url, { with: { type: 'json' } })
+      : await import(url);
+    return mod.default ?? mod;
+  }
+
   /** Resolve `--work novel` / `--work ./my-work.mjs` / inline JSON into a work object. */
   async function resolveWork(spec, opts = {}) {
     if (spec && typeof spec === 'object') return spec;
     const name = String(spec);
     if (workPresets[name]) return workPresets[name](opts);
     if (/\.(mjs|js|json)$/i.test(name)) {
-      const mod = await import(new URL(name, `file://${process.cwd()}/`).href);
-      return mod.default ?? mod;
+      return importSpecFile(name);
     }
     if (name.trim().startsWith('{')) return JSON.parse(name);
     throw new Error(`unknown work "${name}". built-in works: ${Object.keys(workPresets).join(', ')}`);
@@ -1198,8 +1213,7 @@
     const name = String(spec ?? 'repeat');
     if (builtins[name]) return builtins[name](opts);
     if (/\.(mjs|js|json)$/i.test(name)) {
-      const mod = await import(new URL(name, `file://${process.cwd()}/`).href);
-      return normalize(mod.default ?? mod);
+      return normalize(await importSpecFile(name));
     }
     if (name.trim().startsWith('{')) return normalize(JSON.parse(name));
     throw new Error(`unknown recipe "${name}". built-ins: ${Object.keys(builtins).join(', ')}`);
