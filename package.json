@@ -51,6 +51,7 @@
   ],
   "scripts": {
     "build": "node scripts/build-userscript.mjs",
+    "version": "node scripts/build-userscript.mjs && git add dist/loopcrop.user.js",
     "start": "node cli/loop.mjs",
     "gui": "node gui/server.mjs",
     "test": "node --test",
