@@ -183,6 +183,9 @@ async function restoreJournal() {
     outDir,
     runName: workId,
     turn: opened.maxSeq(),
+    // The header counts files produced by this run, and after a restart the only
+    // evidence of that is the journal itself. Recount instead of showing 0.
+    artifactsThisRun: opened.summaries().reduce((n, r) => n + (r.saved ?? 0), 0),
     phase: 'idle',
   });
 

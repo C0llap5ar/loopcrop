@@ -1,0 +1,110 @@
+# loopcrop
+
+> Drives a browser tab you are already signed into: send a prompt, wait for the turn to
+> actually finish, harvest the files it produced, send the next one. Repeat until a stop
+> condition fires. Crash-safe and idempotent — a restarted run replays completed asks from
+> a local journal instead of re-sending them.
+
+loopcrop is a Node CLI, a browser userscript, and a local web GUI over one shared core. It
+targets AI chat **web UIs** (not APIs), so no API key is involved and the user's existing
+subscription, project context and file sandbox apply. The only site adapter shipped today
+is ChatGPT; an adapter is four methods (`probe`, `send`, `status`, `harvest`).
+
+- Version: 0.4.0 · License: MIT · Node: >= 22
+- Repository: https://github.com/C0llap5ar/loopcrop
+- Package: https://www.npmjs.com/package/loopcrop
+
+## What it is for
+
+Long-running generation that a chat UI handles badly: serialized fiction written chapter by
+chapter, batch translation, dataset building — work that takes tens of rounds, takes minutes
+per round, and produces a file every round.
+
+## What it does
+
+- Sends prompts into an existing, already-authenticated chat tab and drives the next round
+  only after the site's own message status reports the turn finished (not a DOM guess).
+- Harvests produced files as **real bytes**, resolving signed single-use download URLs
+  inside the page while the session is fresh.
+- Dedupes artifacts by file id in an atomic manifest, so a reload or a restart never saves
+  the same file twice.
+- Records every completed ask to an append-only journal
+  (`.loopcrop/journal/<run-name>.jsonl`) holding prompt, duration, full reply text, content
+  blocks, saved files and the check verdict. On restart, completed asks replay locally;
+  only unfinished ones are sent. This is the feature that distinguishes it from
+  auto-continue scripts.
+- Runs **staged works**: ordered stages, each with its own source, prompt, check and retry
+  budget. The built-in `novel` preset is outline → one ask per chapter → continuity review.
+- Expands sources from a single value, a list, CSV text, JSONL text, or a function.
+- Applies checks that return one of four verdicts: `ok`, `retry`, `pause`, `abort`.
+- Applies guard budgets (`asks`, `duration`, `artifacts`, `failures`, `silence`) evaluated
+  between asks, so an in-flight turn always finishes and is journaled before a pause. A
+  guard ends a run as `paused`, never `failed`.
+- Stops on markers, regexes, dry streaks, wall clock, or consecutive errors.
+
+## What it does not do
+
+- It is not a way to use a model for free. It spends the user's own subscription exactly
+  as if they typed the prompts.
+- It does not circumvent content policy. A refusal is detected (`noRefusal` check) and
+  pauses the run.
+- Automating a web UI conflicts with the target site's terms of service. The realistic risk
+  is rate limiting and adapter breakage on markup changes, not account termination. Guards,
+  journaling and `paused`-instead-of-`failed` exist to minimise loss when that happens.
+- One conversation per run. Tab switching mid-run is not modelled.
+- Staged works are Node-only. The userscript bundle deliberately omits `work.js`,
+  `sources.js`, `checks.js` and `guards.js` because resuming a stage needs a
+  filesystem-backed journal.
+- Adapters are site-specific and markup-dependent. Only ChatGPT is implemented.
+- The userscript cannot write arbitrary paths; browsers route downloads through the
+  download manager.
+
+## Key commands
+
+```
+npm install -g loopcrop
+loopcrop --dry-run                                    # show what a run would do, send nothing
+loopcrop --work novel --chapters 12 --genre 悬疑 --out ./chapters
+loopcrop --recipe ./my-recipe.mjs
+node gui/server.mjs                                   # three-pane GUI on 127.0.0.1:4317
+```
+
+Rerunning the same command is the resume mechanism — completed asks replay from the journal.
+
+## Files
+
+- [README.md](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/README.md): full
+  English documentation — recipe shape, stage fields, source forms, check verdicts, guard
+  budgets, adapter contract, repository layout, test strategy, and stated limitations.
+- [README.zh-CN.md](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/README.zh-CN.md):
+  the same documentation in Simplified Chinese, organised around the questions people
+  actually search for.
+- [docs/writing-an-adapter.md](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/docs/writing-an-adapter.md):
+  how to add a site. Four methods, two non-obvious rules about authoritative status and
+  byte-level harvesting.
+- [core/adapters/chatgpt.js](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/core/adapters/chatgpt.js):
+  the worked adapter, including why it uses the site's private conversation endpoint rather
+  than the DOM.
+- [core/journal.js](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/core/journal.js)
+  and [core/session.js](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/core/session.js):
+  the append-only journal and the seq-keyed idempotent `ask()` that replays from it.
+- [core/work.js](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/core/work.js):
+  staged runs and the journal-derived resume cursor.
+- [examples/my-recipe.mjs](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/examples/my-recipe.mjs):
+  a minimal custom recipe.
+- [dist/loopcrop.user.js](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/dist/loopcrop.user.js):
+  the built userscript, installable without a toolchain.
+
+## Verification claims
+
+`npm test` runs 59 unit tests against fake adapters, journals and transports. The load-bearing
+one aborts a 100-ask run midway, reopens the journal, finishes, and asserts every prompt was
+sent exactly once. Two further tests prove a staged run resumes at the next round after a
+crash between rounds, and spends a remaining retry instead of restarting the round after a
+crash inside a retry budget. Live checks against a real browser live in `live/`, outside the
+test runner's discovery glob, because they spend real quota.
+
+## Optional
+
+- [Release notes](https://github.com/C0llap5ar/loopcrop/releases): what changed in 0.4.0.
+- [Issues](https://github.com/C0llap5ar/loopcrop/issues): bug reports and adapter requests.

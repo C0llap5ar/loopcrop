@@ -1,7 +1,7 @@
 {
   "name": "loopcrop",
   "version": "0.4.0",
-  "description": "Turn any AI chat web UI into a repeatable prompt loop: send, wait, harvest the files it produced, repeat.",
+  "description": "Drive any AI chat web UI in a loop from the tab you are already signed into: send a prompt, wait for the turn to finish, harvest the files it produced, repeat. Crash-safe: a restarted run replays completed asks from a local journal instead of re-sending them.",
   "type": "module",
   "license": "MIT",
   "author": "C0llap5ar",
@@ -15,13 +15,24 @@
   "homepage": "https://github.com/C0llap5ar/loopcrop#readme",
   "keywords": [
     "chatgpt",
+    "chatgpt-automation",
     "claude",
     "userscript",
+    "tampermonkey",
+    "browser-automation",
     "automation",
+    "prompt-loop",
+    "prompt-chaining",
     "loop-crop",
     "agent",
+    "no-api-key",
+    "crash-recovery",
+    "idempotent",
+    "resume",
+    "batch-generation",
     "novel-writing",
-    "batch-generation"
+    "content-generation",
+    "dataset"
   ],
   "bin": {
     "loopcrop": "cli/loop.mjs"

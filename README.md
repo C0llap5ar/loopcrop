@@ -4,9 +4,27 @@
 
 **Turn any AI chat web UI into a repeatable prompt loop.**
 
+> **TL;DR** — Drives a browser tab you are already signed into: send a prompt, wait for the
+> turn to actually finish, harvest the files it produced, send the next one. Repeat until a
+> stop condition fires. **Crash-safe and idempotent** — a restarted run replays completed
+> asks from a local journal instead of re-sending them.
+>
+> **For** people running tens of rounds of generation that a chat UI handles badly: serialized
+> fiction chapter by chapter, batch translation, dataset building. **Not** an API client, not
+> a way to use a model for free, not a content-policy bypass.
+>
+> `npm i -g loopcrop` · [30-second setup](#how-do-i-set-up-the-userscript) · [how the journal works](#what-happens-when-it-crashes-gets-rate-limited-or-the-tab-reloads)
+>
+> **简体中文 → [README.zh-CN.md](README.zh-CN.md)**
+
 Send a prompt → wait for the turn to actually finish → harvest the files it produced → send the next prompt. Repeat until a stop condition fires.
 
 No API key. No separate browser. It drives the tab you are already signed into, so your existing subscription, project context and file sandbox all apply.
+
+<img src="docs/images/gui-stages.png" alt="The loopcrop GUI: artifacts and stage progress on the left, one row per ask in the middle, the full reply of any ask on the right" width="100%">
+
+<p align="center"><sub>The GUI workbench — artifacts and stage progress on the left, one row per ask in the middle,
+the full reply of any ask on the right. Each row shows how long the turn took, how much it wrote, and which files it dropped.</sub></p>
 
 ```
 ┌─────────────┐   prompt    ┌──────────────┐   files    ┌──────────────┐
@@ -22,7 +40,7 @@ No API key. No separate browser. It drives the tab you are already signed into, 
 
 ---
 
-## Why this exists
+## What problem does this solve?
 
 Long-running generation tasks — serialized fiction, batch translation, dataset building — have a shape that chat UIs handle badly:
 
@@ -33,11 +51,13 @@ Long-running generation tasks — serialized fiction, batch translation, dataset
 
 `loopcrop` is that missing loop. The fiction preset is just the first recipe; the engine knows nothing about novels.
 
-## What makes it different from a "keep generating" clicker
+## How is this different from an auto-continue script?
 
-| | auto-continue scripts | **loopcrop** |
+The tools in this space are usually called auto-continue, keep-generating, or 自动点继续. Most of them do one thing: every N seconds, type "continue" into the composer.
+
+| | Auto-continue userscripts<br/>(ChatGPT Auto-Continue, ChatGPT Auto-Refresh & Continue, Keep ChatGPT Going, and the various Tampermonkey 续写 scripts) | **loopcrop** |
 |---|---|---|
-| knows when a turn ended | guesses from the DOM | reads the site's own message status |
+| knows when a turn ended | guesses from the DOM, or a timer | reads the site's own message status |
 | collects the output | ❌ | ✅ resolves signed URLs, saves real bytes |
 | survives a page reload | ❌ | ✅ manifest dedupes by file id |
 | survives a process crash | ❌ | ✅ journal replays completed turns without re-sending |
@@ -46,13 +66,71 @@ Long-running generation tasks — serialized fiction, batch translation, dataset
 | plans across rounds | one prompt forever | staged works: outline → per-item → review |
 | pacing / rate limits | fixed sleep | jittered backoff with error budgets |
 
-## Three front-ends, one core
+## What loopcrop does not do
+
+Stating the boundary is more useful than listing features:
+
+- **It is not a way to use a model for free.** It spends your own subscription exactly as if you typed the prompts — no more, no less.
+- **It does not circumvent content policy.** When the model refuses, a `noRefusal` check pauses the run rather than working around the refusal. It saves your mouse and your attention, not OpenAI's rules.
+- **Automating a web UI conflicts with the target site's terms of service.** The realistic failure is rate limiting, or an adapter breaking when the page markup moves — not account termination. The whole design is oriented at minimising loss when that happens: guards, journaling, and `paused` instead of `failed`.
+- **One conversation per run.** Tab switching mid-run is not modelled.
+- **Staged works are a Node-only feature.** The userscript carries the recipe loop, not `work.js`, because resuming a stage needs a filesystem journal. Browser users get `repeat`, not `--work`.
+- **A fresh chat is a supported starting point.** Its conversation id only appears in the URL after the first message is accepted, so both `probe()` and `status()` treat "no id yet" as a valid state and wait briefly, rather than as an error.
+- **Site changes break adapters.** ChatGPT's DOM and private endpoints are not a public API. When they move, `core/adapters/chatgpt.js` needs fixing — nothing else does.
+- **Only ChatGPT has an adapter today.** The architecture is plugin-shaped and an adapter is four methods, but Claude, Gemini and the Chinese chat UIs all need one written.
+- **The userscript cannot write arbitrary paths.** Browsers route downloads through the download manager, so the folder is whatever the browser chooses plus the configured subdirectory. Use the CLI when the exact path matters.
+- **Multiple-download prompts are unavoidable** in the browser build.
+- **Quota is yours.** This spends your subscription exactly as if you typed the prompts. It adds no retry budget beyond what the stop conditions let you configure. If harvesting fails after a successful send, that turn is still journaled, so restarting will not spend the same prompt again.
+
+## What happens when it crashes, gets rate-limited, or the tab reloads?
+
+This is the one thing loopcrop has that the alternatives do not, and it deserves its own section.
+
+Every completed ask appends one line to `.loopcrop/journal/<run-name>.jsonl`: the prompt verbatim, the duration, the **full reply text**, the content blocks, which files were saved, the check verdict, and which stage / item / retry slot it belonged to.
+
+So:
+
+- **the process dies** → rerun the same command. Completed asks replay locally; only unfinished ones are sent.
+- **the page reloads** → same, and artifacts are already deduped by file id, so nothing is saved twice.
+- **you want to change course** → truncate the journal to line K and rerun from there. Linear truncation, no branch tree.
+- **you get rate-limited** → a guard fires and the run ends as `paused` (not `failed`). Wait, rerun the same command, it picks up where it stopped.
+- **a crash lands inside a retry budget** → the remaining retry is spent, rather than restarting a whole round. Retry is budgeted **per repetition**: `repeat: 3, retry: 1` means three chapters, each allowed one retry.
+
+The load-bearing design choice: **the journal is the progress truth**, and the manifest is only the artifact index. The resume cursor is derived from the journal rather than recomputed from the recipe, so changing `repeat` or `retry` between two runs cannot desynchronise rounds that already completed.
+
+A real run, verbatim from the terminal (a one-stage test work):
+
+```
+18:03:29 turn 1: sent
+18:03:37 turn 1 settled · 0 new file(s)
+[echo] item 1 · ask #1 · 10s · 5 ch · 0 file(s)
+work end · done
+```
+
+`.loopcrop/journal/smoke.jsonl` afterwards — one ask line, one annotation line:
+
+```
+seq 1 | check ok | stage echo | dur 9860 ms | text "链路已通。"
+```
+
+Then the same command, run again:
+
+```
+18:04:42 resuming at turn 2
+work end · done
+```
+
+Not one `sent` line. It read the journal, saw round 1 was done, and sent nothing. That record comes from a real browser and a real ChatGPT account — it is the entire reason `journal.js` exists.
+
+## Which front-end should I use?
 
 The engine, adapters, recipes and stop conditions are shared. Only the outer shell differs.
 
-**Userscript** — paste one file, no toolchain. Writes through the browser's download manager.
-**CLI** — Node, writes straight to disk, resumable, scriptable. Drives your existing browser through an extension bridge.
-**GUI** — `node gui/server.mjs`, then open `http://127.0.0.1:4317`. Three-pane workbench over the same core: journal timeline, stage progress, and the full reply on demand.
+| You want | Use | Trade-off |
+|---|---|---|
+| install and go, no terminal | **Userscript** — paste `dist/loopcrop.user.js` into Tampermonkey | files land wherever the browser's download manager puts them |
+| resumable, staged, exact paths | **CLI** — `npm i -g loopcrop` | needs Node ≥ 22 and a browser extension bridge |
+| watch the whole run, read every reply | **GUI** — `node gui/server.mjs`, open `127.0.0.1:4317` | same as CLI |
 
 The GUI and CLI share one thing the userscript cannot have: a journal on disk. That is
 why staged works (`--work`) and crash recovery are Node-only — a browser has nowhere to
@@ -60,7 +138,7 @@ append to.
 
 ---
 
-## Quick start — userscript
+## How do I set up the userscript?
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) or Violentmonkey.
 2. Open `dist/loopcrop.user.js` and paste it in as a new script.
@@ -69,7 +147,7 @@ append to.
 
 The first run asks your browser to allow multiple downloads. That prompt is a browser policy, not something a script can skip.
 
-## Quick start — CLI
+## How do I set up the CLI?
 
 ```bash
 npm install -g loopcrop     # or: npx loopcrop --help
@@ -108,7 +186,7 @@ text, content blocks and saved files. On restart, completed sequence numbers are
 locally; only unfinished asks are sent. The journal is the progress truth, while the
 manifest remains the artifact index.
 
-## Quick start — GUI
+## How do I run the GUI?
 
 ```bash
 node gui/server.mjs      # or: npm run gui
@@ -138,6 +216,8 @@ the right; it renders as plain monospace text, not markdown, because the artifac
 `.txt` and reformatting them would mangle the prose. Only one reply is open at a time, so
 a 600,000-character run never loads itself into the DOM at once.
 
+<img src="docs/images/gui-detail.png" alt="Opening one ask: the full reply, its duration, its character count and the files it produced" width="100%">
+
 Search filters on sequence, prompt, stage, filename and the bodies you have already
 opened. Bodies are fetched on demand — the list endpoint returns summaries only.
 
@@ -149,7 +229,7 @@ The GUI can drive either a recipe (one prompt, repeated) or a built-in work
 (`--work novel`: outline → chapter by chapter → continuity review). Work mode shows the
 stage rail and needs no prompt text at all.
 
-## Recipes
+## How do I write a recipe?
 
 A recipe is `{ name, prompt, stop, outDir }`. `prompt` may be a function of `(turn, state)`.
 
@@ -185,7 +265,7 @@ Built in: `novel`, `translate`, `repeat`, `custom`.
 
 ---
 
-## Works — staged runs
+## How do I plan a multi-round task instead of one repeated prompt?
 
 A recipe is one prompt repeated. A **work** is ordered stages, and each stage owns its
 own source, prompt, check and retry budget. Use `--work` instead of `--recipe`:
@@ -271,7 +351,7 @@ retry.
 
 ---
 
-## Writing an adapter
+## How do I add another site?
 
 An adapter is four methods. It runs inside the page, so it inherits the session and may call the site's private endpoints.
 
@@ -290,7 +370,7 @@ Two rules that are not obvious:
 1. **`status` must be authoritative.** Reading "is it typing?" off the DOM produces double-submits, because sites flicker to idle between the thinking phase and the writing phase. Prefer the site's own message status.
 2. **`harvest` must return bytes, not links.** Signed download URLs expire and are single-use; fetch them inside the adapter while the session is fresh.
 
-`core/adapters/chatgpt.js` is a full worked example, including why it uses the private conversation API instead of the DOM.
+`core/adapters/chatgpt.js` is a full worked example, including why it uses the private conversation API instead of the DOM. See [`docs/writing-an-adapter.md`](docs/writing-an-adapter.md) for the long version.
 
 ## Repository layout
 
@@ -321,7 +401,14 @@ userscript/          browser front-end + floating HUD
 scripts/
   build-userscript.mjs   inlines the shared core into dist/loopcrop.user.js
 dist/                built userscript (committed so users can install without a build)
+docs/
+  writing-an-adapter.md  the long version of adding a site
+  images/                GUI screenshots used by the READMEs
 ```
+
+`llms.txt` sits at the repo root: a compact, plain-language description of what the
+project does and does not do, aimed at assistants and crawlers that summarise repositories
+without rendering the README.
 
 `work.js`, `sources.js`, `checks.js` and `guards.js` are deliberately **not** in the
 userscript bundle: the browser build only carries the recipe loop, because a staged
@@ -331,7 +418,7 @@ The build step is a ~90-line dependency-free ESM inliner rather than a bundler, 
 
 ## Verification
 
-`npm test` runs 56 unit tests with fake adapters, journals and a fake transport — fast,
+`npm test` runs 59 unit tests with fake adapters, journals and a fake transport — fast,
 and they pin the parts that are easy to get subtly wrong: turn accounting, dedupe,
 atomic manifest writes, base64 byte handling, stop conditions, journal persistence,
 idempotent replay, source expansion, check verdicts, guard budgets, and the work resume
@@ -366,20 +453,6 @@ development:
 
 The send path also verifies the composer actually drained after clicking, because a
 click that misses leaves the text in place — and retrying then sends it twice.
-
-## Limitations, stated plainly
-
-- **One conversation per run.** Tab switching mid-run is not modelled.
-- **Staged works are a Node-only feature.** The userscript carries the recipe loop, not
-  `work.js`, because resuming a stage needs a filesystem journal. Browser users get
-  `repeat`, not `--work`.
-- **A fresh chat is a supported starting point.** Its conversation id only appears in
-  the URL after the first message is accepted, so both `probe()` and `status()` treat
-  "no id yet" as a valid state and wait briefly, rather than as an error.
-- **Site changes break adapters.** ChatGPT's DOM and private endpoints are not a public API. When they move, `core/adapters/chatgpt.js` needs fixing — nothing else does.
-- **The userscript cannot write arbitrary paths.** Browsers route downloads through the download manager, so the folder is whatever the browser chooses plus the configured subdirectory. Use the CLI when the exact path matters.
-- **Multiple-download prompts are unavoidable** in the browser build.
-- **Quota is yours.** This spends your subscription exactly as if you typed the prompts. It adds no retry budget beyond what the stop conditions let you configure. If harvesting fails after a successful send, that turn is still journaled, so restarting will not spend the same prompt again.
 
 ## License
 
