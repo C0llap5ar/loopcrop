@@ -1,104 +1,153 @@
+<div align="center">
+
 # loopcrop
 
-[![npm version](https://badge.fury.io/js/loopcrop.svg)](https://www.npmjs.com/package/loopcrop) [![CI](https://github.com/C0llap5ar/loopcrop/actions/workflows/ci.yml/badge.svg)](https://github.com/C0llap5ar/loopcrop/actions/workflows/ci.yml) [![license](https://img.shields.io/npm/l/loopcrop.svg)](LICENSE)
+<a href="https://readme-typing-svg.demolab.com"><img src="https://readme-typing-svg.demolab.com?font=Noto+Sans+SC&weight=600&size=22&pause=1200&color=6366F1&center=true&vCenter=true&width=720&lines=%E8%AE%A9+ChatGPT+%E7%BD%91%E9%A1%B5%E7%89%88%E8%87%AA%E5%B7%B1%E4%B8%80%E7%9B%B4%E5%86%99%E4%B8%8B%E5%8E%BB%EF%BC%8C%E4%B8%8D%E7%94%A8%E5%AE%88%E7%9D%80;%E7%BB%AD%E8%B7%91%E3%80%81%E6%96%AD%E7%82%B9%E7%BB%AD%E4%BC%A0%E3%80%81%E4%B8%8D%E9%87%8D%E5%A4%8D%E8%8A%B1%E9%85%8D%E9%A2%9D" alt="loopcrop" /></a>
 
-**Turn any AI chat web UI into a repeatable prompt loop.**
+**让 ChatGPT 网页版自己一轮一轮跑下去：发提示词 → 等它真正写完 → 把它生成的文件收下来 → 再发下一轮。**
 
-> **TL;DR** — Drives a browser tab you are already signed into: send a prompt, wait for the
-> turn to actually finish, harvest the files it produced, send the next one. Repeat until a
-> stop condition fires. **Crash-safe and idempotent** — a restarted run replays completed
-> asks from a local journal instead of re-sending them.
->
-> **For** people running tens of rounds of generation that a chat UI handles badly: serialized
-> fiction chapter by chapter, batch translation, dataset building. **Not** an API client, not
-> a way to use a model for free, not a content-policy bypass.
->
-> `npm i -g loopcrop` · [30-second setup](#how-do-i-set-up-the-userscript) · [how the journal works](#what-happens-when-it-crashes-gets-rate-limited-or-the-tab-reloads)
->
-> **简体中文 → [README.zh-CN.md](README.zh-CN.md)**
+不需要 API key，不另开浏览器。它驱动你已经登录的那个标签页，你现有的订阅、项目上下文、文件沙箱原样生效。
 
-Send a prompt → wait for the turn to actually finish → harvest the files it produced → send the next prompt. Repeat until a stop condition fires.
+[![npm](https://badge.fury.io/js/loopcrop.svg)](https://www.npmjs.com/package/loopcrop)
+[![CI](https://github.com/C0llap5ar/loopcrop/actions/workflows/ci.yml/badge.svg)](https://github.com/C0llap5ar/loopcrop/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/loopcrop.svg)](LICENSE)
+[![stars](https://img.shields.io/github/stars/C0llap5ar/loopcrop?style=social)](https://github.com/C0llap5ar/loopcrop)
 
-No API key. No separate browser. It drives the tab you are already signed into, so your existing subscription, project context and file sandbox all apply.
+**简体中文** · [English](README.en.md)
 
-<img src="docs/images/gui-stages.png" alt="The loopcrop GUI: artifacts and stage progress on the left, one row per ask in the middle, the full reply of any ask on the right" width="100%">
-
-<p align="center"><sub>The GUI workbench — artifacts and stage progress on the left, one row per ask in the middle,
-the full reply of any ask on the right. Each row shows how long the turn took, how much it wrote, and which files it dropped.</sub></p>
-
-```
-┌─────────────┐   prompt    ┌──────────────┐   files    ┌──────────────┐
-│   recipes   │ ──────────▶ │    engine    │ ─────────▶ │    sinks     │
-│ (what/when) │             │ (the loop)   │            │ (disk/dl)    │
-└─────────────┘             └──────┬───────┘            └──────────────┘
-                                   │ status / harvest
-                            ┌──────▼───────┐
-                            │   adapters   │  ← the only site-specific code
-                            │  chatgpt.js  │
-                            └──────────────┘
-```
+</div>
 
 ---
 
-## What problem does this solve?
+<img src="docs/images/gui-stages.png" alt="loopcrop GUI：左边是产物和阶段进度，中间是逐条 ask 的时间线，右边可以展开任意一轮的完整回复" width="100%">
 
-Long-running generation tasks — serialized fiction, batch translation, dataset building — have a shape that chat UIs handle badly:
+<div align="center">
+<sub>三栏工作台：左栏产物/阶段，中栏时间线，右栏展开任意一轮的原文。<br/>每一行都能看到这一轮跑了多久、写了多少字、卸下哪几个文件。</sub>
+</div>
 
-- every round produces files you have to download by hand,
-- every round needs the same instruction retyped,
-- the model takes minutes per round, so you cannot babysit it,
-- and when the tab reloads mid-run you lose track of what is already saved.
+## 这玩意儿到底是干什么的
 
-`loopcrop` is that missing loop. The fiction preset is just the first recipe; the engine knows nothing about novels.
+你有一个一次要跑几十轮的活：写一本分章的小说、批量翻译一批文档、把一堆素材整理成数据集。
 
-## How is this different from an auto-continue script?
+在 ChatGPT 网页版里，这件事的每一步都要你手动参与：
 
-The tools in this space are usually called auto-continue, keep-generating, or 自动点继续. Most of them do one thing: every N seconds, type "continue" into the composer.
+- 每一轮它都会生成文件，你得自己点下载；
+- 每一轮你都要把同一句「继续」再打一遍；
+- 一轮要几分钟，你没法一直盯着；
+- 页面一刷新、电脑一休眠、命名空间一断，你就不知道哪些已经保存过、哪些没有。
 
-| | Auto-continue userscripts<br/>(ChatGPT Auto-Continue, ChatGPT Auto-Refresh & Continue, Keep ChatGPT Going, and the various Tampermonkey 续写 scripts) | **loopcrop** |
+`loopcrop` 就是补上这个循环的工具。它把「发提示词 → 等这一轮真的结束 → 收割产物 → 再发下一轮」做成一个可中断、可续跑的循环。
+
+小说只是内置的第一个预设。引擎本身完全不知道「小说」是什么。
+
+## 30 秒上手：三种前端，选一个
+
+| 你想要 | 用这个 | 代价 |
+| --- | --- | --- |
+| 装上就能跑，不想碰命令行 | **油猴脚本**<br/>把 `dist/loopcrop.user.js` 粘进 Tampermonkey | 文件走浏览器下载目录，路径不由你定 |
+| 要断点续传、要多阶段、要精确路径 | **CLI**<br/>`npm i -g loopcrop` | 需要 Node ≥ 22 + 一个浏览器扩展桥 |
+| 想看整个跑的过程、想逐条回看回复 | **GUI**<br/>`node gui/server.mjs` 然后开 `127.0.0.1:4317` | 同 CLI |
+
+三者共用同一个内核。**断点续传和多阶段任务只有 CLI/GUI 有**——因为续跑需要磁盘上有一份 journal，浏览器里没有地方可以追加。
+
+<details>
+<summary><b>油猴脚本：四步</b></summary>
+
+1. 装 [Tampermonkey](https://www.tampermonkey.net/) 或 Violentmonkey。
+2. 把 [`dist/loopcrop.user.js`](dist/loopcrop.user.js) 的内容粘进去，新建脚本。
+3. 打开一个 ChatGPT 对话页，右下角会出现控制面板。
+4. 点 **Start**。
+
+第一次运行浏览器会问「是否允许本站点多次下载」，这是浏览器策略，脚本绕不过。
+</details>
+
+<details>
+<summary><b>CLI：装完就能跑</b></summary>
+
+```bash
+npm install -g loopcrop
+loopcrop --help
+```
+
+CLI 不启动浏览器，它连到你已经开着的那个，通过一个扩展桥：
+
+```
+GET  /health                 -> { extensionConnected, targets: [...] }
+GET  /pair                   -> { token }
+WS   /ws?role=pi&token=...   { type: "request", id, method, params, target }
+```
+
+已对 [`pi-control-chrome`](https://github.com/lyd123qw2008/pi-control-chrome) 0.8.0 实测通过。任何形状相同的桥都能用——传输层只有一个文件：`cli/loop.mjs` 里的 `openTransport()`。
+
+```bash
+# 只看会发生什么，一个字都不发
+loopcrop --dry-run
+
+# 把当前这一轮的产物存下来，不发新请求
+loopcrop --adopt --out ./chapters
+
+# 跑小说预设：一轮一句「继续」
+loopcrop --recipe novel --out ./chapters --turns 20
+
+# 或者跑成分阶段任务：大纲 → 每章一次 → 连续性检查
+loopcrop --work novel --chapters 12 --genre 悬疑 --out ./chapters
+
+# 断点续传：原样再跑一遍。已完成的轮次从 journal 本地重放，绝不重发
+```
+</details>
+
+<details>
+<summary><b>GUI：三栏工作台</b></summary>
+
+```bash
+node gui/server.mjs          # 或 npm run gui
+```
+
+打开 `http://127.0.0.1:4317`，点「连接」探测桥并列出标签页，选好模式开跑。进度走 SSE 推送——**关掉浏览器标签页，跑批还在 Node 进程里继续**。
+
+| 栏位 | 放什么 |
+| --- | --- |
+| 左栏 | **产物**（这次跑出来的文件）或**阶段**（每阶段的进度条） |
+| 中栏 | 运行表单 + 时间线，每个 ask 一行 |
+| 底部 | 日志，默认收起 |
+
+时间线就是 journal 本身。每行有轮次号、检查结论（`✓` 通过、`↻` 重试、`⏸` 暂停、`✕` 中止）、属于哪个阶段第几项、花了多久、回了多少字。点一行从右侧滑出完整回复，等宽纯文本渲染——**不转 markdown**，因为产物是 `.txt`，重新排版会把正文弄乱。同一时间只开一条，60 万字的一次跑批不会把自己塞进 DOM 卡死。
+
+<img src="docs/images/gui-detail.png" alt="点开某一轮，右侧滑出它的完整回复、耗时、字数和它产出的文件" width="100%">
+
+觉得某轮回复不行，点「重做」会把 journal 截断到那一轮之前重跑。被截掉的轮次会重发，之前的都从磁盘重放。
+
+```bash
+PORT=4318 node gui/server.mjs     # 配置存在 .loopcrop-gui.json
+```
+</details>
+
+## 它和「自动点继续」的脚本差在哪
+
+市面上这类工具叫 auto-continue、keep-generating、自动点继续。它们大多只做一件事：每 N 秒往输入框里打一句「继续」。
+
+|  | 自动点继续类脚本<br/>（ChatGPT Auto-Continue / Keep ChatGPT Going / 各类 Tampermonkey 续写脚本） | **loopcrop** |
 |---|---|---|
-| knows when a turn ended | guesses from the DOM, or a timer | reads the site's own message status |
-| collects the output | ❌ | ✅ resolves signed URLs, saves real bytes |
-| survives a page reload | ❌ | ✅ manifest dedupes by file id |
-| survives a process crash | ❌ | ✅ journal replays completed turns without re-sending |
-| remembers the replies | ❌ | ✅ journal keeps full text + blocks + files |
-| stops on a condition | count only | markers, patterns, dry streaks, wall clock |
-| plans across rounds | one prompt forever | staged works: outline → per-item → review |
-| pacing / rate limits | fixed sleep | jittered backoff with error budgets |
+| 怎么判断这一轮结束了 | 猜 DOM 状态、或者定时 | 读站点自己的消息状态 |
+| 收不收产物 | ✗ 你得自己点下载 | ✓ 解析签名 URL，落真实字节 |
+| 页面刷新后 | ✗ 从头乱掉 | ✓ manifest 按文件 id 去重 |
+| **进程崩了之后** | ✗ 不知道发到哪了 | ✓ **journal 重放已完成的轮次，不重发、不重花配额** |
+| 记不记得它回了什么 | ✗ | ✓ journal 存全文 + 内容块 + 文件清单 |
+| 什么时候停 | 只能数轮数 | 标记词、正则、连续无产物、墙钟、连续失败 |
+| 跨轮次的计划 | ✗ 一句「继续」到底 | ✓ 分阶段任务：大纲 → 逐项 → 复查 |
+| 限速 | 固定 sleep | 带抖动的退避 + 错误预算 |
 
-## What loopcrop does not do
+## 它到底怎么跑
 
-Stating the boundary is more useful than listing features:
+分阶段任务（`--work`）是这个工具真正的形态。内置的 `novel` 预设是这样的：
 
-- **It is not a way to use a model for free.** It spends your own subscription exactly as if you typed the prompts — no more, no less.
-- **It does not circumvent content policy.** When the model refuses, a `noRefusal` check pauses the run rather than working around the refusal. It saves your mouse and your attention, not OpenAI's rules.
-- **Automating a web UI conflicts with the target site's terms of service.** The realistic failure is rate limiting, or an adapter breaking when the page markup moves — not account termination. The whole design is oriented at minimising loss when that happens: guards, journaling, and `paused` instead of `failed`.
-- **One conversation per run.** Tab switching mid-run is not modelled.
-- **Staged works are a Node-only feature.** The userscript carries the recipe loop, not `work.js`, because resuming a stage needs a filesystem journal. Browser users get `repeat`, not `--work`.
-- **A fresh chat is a supported starting point.** Its conversation id only appears in the URL after the first message is accepted, so both `probe()` and `status()` treat "no id yet" as a valid state and wait briefly, rather than as an error.
-- **Site changes break adapters.** ChatGPT's DOM and private endpoints are not a public API. When they move, `core/adapters/chatgpt.js` needs fixing — nothing else does.
-- **Only ChatGPT has an adapter today.** The architecture is plugin-shaped and an adapter is four methods, but Claude, Gemini and the Chinese chat UIs all need one written.
-- **The userscript cannot write arbitrary paths.** Browsers route downloads through the download manager, so the folder is whatever the browser chooses plus the configured subdirectory. Use the CLI when the exact path matters.
-- **Multiple-download prompts are unavoidable** in the browser build.
-- **Quota is yours.** This spends your subscription exactly as if you typed the prompts. It adds no retry budget beyond what the stop conditions let you configure. If harvesting fails after a successful send, that turn is still journaled, so restarting will not spend the same prompt again.
+| 阶段 | 来源 | 提示词 | 检查 |
+|---|---|---|---|
+| `outline` | 1 项 | 「写分卷大纲，不要正文」 | ≥ 200 字 |
+| `body` | 每章 1 项 | 「按大纲写第 {item} 章」 | ≥ 800 字 |
+| `continuity` | 1 项 | 「通读全文，列出冲突」 | ≥ 100 字 |
 
-## What happens when it crashes, gets rate-limited, or the tab reloads?
-
-This is the one thing loopcrop has that the alternatives do not, and it deserves its own section.
-
-Every completed ask appends one line to `.loopcrop/journal/<run-name>.jsonl`: the prompt verbatim, the duration, the **full reply text**, the content blocks, which files were saved, the check verdict, and which stage / item / retry slot it belonged to.
-
-So:
-
-- **the process dies** → rerun the same command. Completed asks replay locally; only unfinished ones are sent.
-- **the page reloads** → same, and artifacts are already deduped by file id, so nothing is saved twice.
-- **you want to change course** → truncate the journal to line K and rerun from there. Linear truncation, no branch tree.
-- **you get rate-limited** → a guard fires and the run ends as `paused` (not `failed`). Wait, rerun the same command, it picks up where it stopped.
-- **a crash lands inside a retry budget** → the remaining retry is spent, rather than restarting a whole round. Retry is budgeted **per repetition**: `repeat: 3, retry: 1` means three chapters, each allowed one retry.
-
-The load-bearing design choice: **the journal is the progress truth**, and the manifest is only the artifact index. The resume cursor is derived from the journal rather than recomputed from the recipe, so changing `repeat` or `retry` between two runs cannot desynchronise rounds that already completed.
-
-A real run, verbatim from the terminal (a one-stage test work):
+一次真实跑批的终端输出（`--work` + 一个只有一轮的测试 work）：
 
 ```
 18:03:29 turn 1: sent
@@ -107,131 +156,58 @@ A real run, verbatim from the terminal (a one-stage test work):
 work end · done
 ```
 
-`.loopcrop/journal/smoke.jsonl` afterwards — one ask line, one annotation line:
+这次跑完之后 `.loopcrop/journal/smoke.jsonl` 里是这样两行（一行 ask、一行标注）：
 
 ```
 seq 1 | check ok | stage echo | dur 9860 ms | text "链路已通。"
 ```
 
-Then the same command, run again:
+**然后原样再跑一遍同一命令：**
 
 ```
 18:04:42 resuming at turn 2
 work end · done
 ```
 
-Not one `sent` line. It read the journal, saw round 1 was done, and sent nothing. That record comes from a real browser and a real ChatGPT account — it is the entire reason `journal.js` exists.
+一行 `sent` 都没有。它读 journal 知道第 1 轮做完了，于是什么都没发。
 
-## Which front-end should I use?
+这不是模拟出来的结论。上面这几行来自真实浏览器 + 真实 ChatGPT 账号的实跑记录，这也是 `journal` 存在的全部理由。
 
-The engine, adapters, recipes and stop conditions are shared. Only the outer shell differs.
+## 崩了、断了、被限流了怎么办
 
-| You want | Use | Trade-off |
-|---|---|---|
-| install and go, no terminal | **Userscript** — paste `dist/loopcrop.user.js` into Tampermonkey | files land wherever the browser's download manager puts them |
-| resumable, staged, exact paths | **CLI** — `npm i -g loopcrop` | needs Node ≥ 22 and a browser extension bridge |
-| watch the whole run, read every reply | **GUI** — `node gui/server.mjs`, open `127.0.0.1:4317` | same as CLI |
+这是 loopcrop 唯一一个别人都没有的东西，值得单独说。
 
-The GUI and CLI share one thing the userscript cannot have: a journal on disk. That is
-why staged works (`--work`) and crash recovery are Node-only — a browser has nowhere to
-append to.
+每完成一次 ask，就往 `.loopcrop/journal/<run-name>.jsonl` 追加一行：提示词原文、耗时、**完整回复正文**、内容块、保存了哪些文件、检查结论、属于哪个阶段第几项第几次重试。
 
----
+于是：
 
-## How do I set up the userscript?
+- **进程崩了** → 重跑同一命令，已完成的轮次在本地重放，只有没做完的会发出去。
+- **页面刷新了** → 同上，而且产物文件已经按 id 去重，不会重复保存。
+- **中途想改主意** → 把 journal 截断到第 K 行，从那里重跑。线性截断，不做分支树。
+- **被限流了** → guard 触发，任务以 `paused` 收尾（不是 `failed`）。等一会儿，原命令再跑一遍就接上。
+- **崩溃在重试预算中间** → 花掉剩下的重试，而不是重开一整轮。重试预算是**按轮计**的：`repeat: 3, retry: 1` = 三章，每章允许一次重试。
 
-1. Install [Tampermonkey](https://www.tampermonkey.net/) or Violentmonkey.
-2. Open `dist/loopcrop.user.js` and paste it in as a new script.
-3. Go to a ChatGPT conversation. A panel appears bottom-right.
-4. Press **Start**.
+关键设计：**journal 是进度的唯一真相**，manifest 只是产物索引。恢复游标从 journal 反推，不重新计算配方——所以你在两次运行之间改了 `repeat` 或 `retry`，也不会让已经做过的轮次错位。
 
-The first run asks your browser to allow multiple downloads. That prompt is a browser policy, not something a script can skip.
+## 它不做什么
 
-## How do I set up the CLI?
+写清楚边界比吹功能有用，尤其是下面这几条：
 
-```bash
-npm install -g loopcrop     # or: npx loopcrop --help
-loopcrop --help
-```
+- **它不是一个能让你免费用 GPT 的东西。** 它花的是你自己的订阅，和你手打这些提示词一模一样，一分不多一分不少。
+- **它不绕过任何内容策略。** 模型拒绝的时候，它检查到 `noRefusal` 会暂停，不会想办法绕过去。它省的是你的鼠标和注意力，不是 OpenAI 的规则。
+- **自动操作网页这件事本身违反 OpenAI 的使用条款。** 实际发生的风险通常不是封号，而是触发频率限制、或者页面结构一变适配器就失效。这个工具的设计目标就是「被限流时损失最小」——所以才有 guard、有 journal、有 `paused` 而不是 `failed`。
+- **一个 run 只对一 conversations。** 中途切标签页不在模型内。
+- **分阶段任务是 Node 专有功能。** 油猴包里没有 `work.js`，因为续跑需要文件系统 journal。浏览器用户拿到的是 `repeat`，不是 `--work`。
+- **站点一改，适配器就坏。** ChatGPT 的 DOM 和私有接口不是公开 API。它们动了，只需要修 `core/adapters/chatgpt.js`，别的都不用动。
+- **油猴脚本写不了任意路径。** 浏览器把下载交给下载管理器，文件夹是浏览器定的。要精确路径就用 CLI。
+- **它现在的适配器只有 ChatGPT。** 架构上是插件式的，写一个适配器只要四个方法，但 Claude / Gemini / 各家国内模型目前都要自己写。
 
-The CLI does not launch a browser. It attaches to one you already have open, through an extension bridge exposing:
+<details>
+<summary><b>完整文档（点开）</b></summary>
 
-```
-GET  /health   -> { extensionConnected, targets: [...] }
-GET  /pair     -> { token }
-WS   /ws?role=pi&token=...   { type: "request", id, method, params, target }
-```
+### 配方（recipe）
 
-Verified against [`pi-control-chrome`](https://github.com/lyd123qw2008/pi-control-chrome) 0.8.0. Any bridge with that shape works — the transport is one file, `cli/loop.mjs:openTransport()`.
-
-```bash
-# see what a run would do, send nothing
-loopcrop --dry-run
-
-# save the current turn's files without sending anything
-loopcrop --adopt --out ./chapters
-
-# run the fiction preset
-loopcrop --recipe novel --out ./chapters --turns 20
-
-# or run it as staged work: outline → one ask per chapter → continuity pass
-loopcrop --work novel --chapters 12 --genre 悬疑 --out ./chapters
-
-# resume: rerun the same command; completed asks replay from the journal, never re-send
-```
-
-Every CLI run also writes an append-only journal at `.loopcrop/journal/<run-name>.jsonl`
-inside the output directory. Each completed ask records its prompt, duration, full reply
-text, content blocks and saved files. On restart, completed sequence numbers are replayed
-locally; only unfinished asks are sent. The journal is the progress truth, while the
-manifest remains the artifact index.
-
-## How do I run the GUI?
-
-```bash
-node gui/server.mjs      # or: npm run gui
-```
-
-Open `http://127.0.0.1:4317`, press **连接** to probe the bridge and list tabs, then pick
-a mode and start. Progress streams over SSE — you can close the tab and the run keeps
-going in the Node process.
-
-```bash
-# config persists in .loopcrop-gui.json; port comes from the environment
-PORT=4318 node gui/server.mjs
-```
-
-It is a three-pane workbench over the same core:
-
-| Pane | Holds |
-| --- | --- |
-| left rail | **产物** (the files this run wrote) or **阶段** (per-stage progress bars) |
-| centre | the run form, and the ask timeline — one row per journaled ask |
-| bottom | the log, folded away until you open it |
-
-The timeline is the journal. Each row shows its sequence number, the check verdict
-(`✓` ok, `↻` retry, `⏸` pause, `✕` abort), the stage and item it belonged to, how long
-it took and how many characters came back. Click a row to slide the full reply out from
-the right; it renders as plain monospace text, not markdown, because the artifacts are
-`.txt` and reformatting them would mangle the prose. Only one reply is open at a time, so
-a 600,000-character run never loads itself into the DOM at once.
-
-<img src="docs/images/gui-detail.png" alt="Opening one ask: the full reply, its duration, its character count and the files it produced" width="100%">
-
-Search filters on sequence, prompt, stage, filename and the bodies you have already
-opened. Bodies are fetched on demand — the list endpoint returns summaries only.
-
-If the reply was a bad one, **重做** truncates the journal to just before that ask and
-re-runs from there. The truncated asks are sent again; everything before them replays
-from disk.
-
-The GUI can drive either a recipe (one prompt, repeated) or a built-in work
-(`--work novel`: outline → chapter by chapter → continuity review). Work mode shows the
-stage rail and needs no prompt text at all.
-
-## How do I write a recipe?
-
-A recipe is `{ name, prompt, stop, outDir }`. `prompt` may be a function of `(turn, state)`.
+配方是 `{ name, prompt, stop, outDir }`。`prompt` 可以是 `(turn, state)` 的函数。
 
 ```js
 // my-recipe.mjs
@@ -249,211 +225,173 @@ export default {
 loopcrop --recipe ./my-recipe.mjs
 ```
 
-Built in: `novel`, `translate`, `repeat`, `custom`.
+内置：`novel`、`translate`、`repeat`、`custom`。
 
-### Stop conditions
-
-| condition | fires when |
+| 停止条件 | 什么时候触发 |
 |---|---|
-| `maxTurns(n)` | n turns completed |
-| `sawText('全书完', 'THE END')` | the reply's tail contains a marker |
-| `sawPattern(/第\s*\d+\s*章.*完$/)` | a regex matches the reply's tail |
-| `noArtifactsFor(n)` | n consecutive turns produced no files |
-| `tooManyErrors(n)` | n consecutive failures — the site is probably blocking |
-| `maxDuration(ms)` | wall-clock budget exhausted |
-| `anyOf(...)` | first one to fire wins |
+| `maxTurns(n)` | 完成 n 轮 |
+| `sawText('全书完', 'THE END')` | 回复尾部包含某个标记 |
+| `sawPattern(/第\s*\d+\s*章.*完$/)` | 正则命中回复尾部 |
+| `noArtifactsFor(n)` | 连续 n 轮没有产出文件 |
+| `tooManyErrors(n)` | 连续 n 次失败——站点大概在拦你 |
+| `maxDuration(ms)` | 墙钟预算用完 |
+| `anyOf(...)` | 任意一个先触发 |
 
----
+### 分阶段任务（work）
 
-## How do I plan a multi-round task instead of one repeated prompt?
-
-A recipe is one prompt repeated. A **work** is ordered stages, and each stage owns its
-own source, prompt, check and retry budget. Use `--work` instead of `--recipe`:
-
-```bash
-loopcrop --work novel --chapters 12 --genre 悬疑
-```
-
-That preset is the honest version of the fiction loop:
-
-| stage | source | prompt | check |
-|---|---|---|---|
-| `outline` | one item | "写分卷大纲，不要正文" | ≥ 200 chars |
-| `body` | one item per chapter | "按大纲写第 {item} 章" | ≥ 800 chars |
-| `continuity` | one item | "通读全文，列出冲突" | ≥ 100 chars |
-
-The one-stage `--recipe novel` still exists and still sends `继续` every turn. It works
-when the conversation already remembers its own plan; a fresh conversation does not,
-which is exactly what the staged form fixes.
-
-### Stage fields
+配方是「一句话重复」。**work 是有序的阶段**，每个阶段有自己的来源、提示词、检查和重试预算。用 `--work` 代替 `--recipe`。
 
 ```js
 {
   name: 'body',
-  source: { dynamic: () => [...], },      // single | list | csv | jsonl | dynamic | function
-  prompt: '按大纲写第 {item} 章',           // string with {item} {round} {stage} {total}, or a function
-  repeat: 12,                             // how many times to ask per source item
-  retry: 1,                               // extra asks allowed when check says retry
-  check: { minLength: 800 },              // ok | retry | pause | abort
-  done: null,                             // optional early-exit condition for the stage
+  source: { dynamic: () => [...] },   // single | list | csv | jsonl | dynamic | 函数
+  prompt: '按大纲写第 {item} 章',      // 支持 {item} {round} {stage} {total}，也可以是函数
+  repeat: 12,                        // 每个来源项问几次
+  retry: 1,                          // 检查说 retry 时多给几次
+  check: { minLength: 800 },         // ok | retry | pause | abort
+  done: null,                        // 可选：这个阶段提前结束的条件
 }
 ```
 
-### Sources
+`{round}` 是跨阶段的全局第几个 ask，`{item}` 是当前来源值，`{repeat}` 是本轮重复序号，`{turn}` 是轮内重试序号。
 
-| source | expands to |
+**来源的六种形态**
+
+| 写法 | 展开成 |
 |---|---|
-| `{ single: value }` | one item |
-| `{ list: [...] }` | one item per element |
-| `{ csv: 'text' }` | one item per row, keyed by the header row |
-| `{ jsonl: 'text' }` | one item per parsed line |
-| `{ dynamic: () => [...] }` | whatever the function returns, including a promise |
-| a bare string or array | shorthand for `single` / `list` |
+| `{ single: value }` | 一项 |
+| `{ list: [...] }` | 每个元素一项 |
+| `{ csv: '文本' }` | 每行一项，按表头取键 |
+| `{ jsonl: '文本' }` | 每行解析成一项 |
+| `{ dynamic: () => [...] }` | 函数返回什么就是什么，可以是 promise |
+| 裸字符串 / 数组 | `single` / `list` 的简写 |
 
-### Checks
+**检查的四种结论**
 
-A check runs after every ask and returns one of four verdicts:
-
-| verdict | meaning |
+| 结论 | 含义 |
 |---|---|
-| `ok` | accept this round and move on |
-| `retry` | spend one retry from `stage.retry`, then give up as `paused` |
-| `pause` | stop the run now, keeping everything journaled |
-| `abort` | stop and mark the run aborted |
+| `ok` | 接受这一轮，往下走 |
+| `retry` | 花掉 `stage.retry` 里的一次重试，用完就 `paused` |
+| `pause` | 立刻停，已 journal 的全部保留 |
+| `abort` | 停并标记为中止 |
 
-Built-ins: `minLength`, `mustMatch`, `jsonParseable`, `noRefusal`, `hasFile`,
-`hasBlock`, plus `allOf` / `anyOf` to combine them. Any check accepts
-`onFail: 'pause' | 'abort'` to override the default `retry`.
+内置检查：`minLength`、`mustMatch`、`jsonParseable`、`noRefusal`、`hasFile`、`hasBlock`，外加 `allOf` / `anyOf` 组合。任何检查都接受 `onFail: 'pause' | 'abort'` 覆盖默认的 `retry`。
 
-### Guards
+**预算守卫（guards）**
 
-Guards are budgets, not destinations. They are evaluated **between** asks, so an
-in-flight turn always finishes and is journaled before the run pauses.
+守卫是预算，不是终点。它们**在两次 ask 之间**评估，所以正在跑的那一轮一定会跑完并写进 journal，然后才暂停。
 
 ```js
 guards: { asks: 40, duration: 3_600_000, artifacts: 0, failures: 3, silence: 5 }
 ```
 
-`asks` counts journaled asks, `duration` is wall-clock ms, `artifacts` counts files
-saved, `failures` counts consecutive send errors, and `silence` counts consecutive asks
-that produced no files. A guard ends the run as `paused`, never `failed` — pause means
-"come back later", and rerunning the same command resumes from the journal.
+`asks` 数已 journal 的 ask，`duration` 是墙钟毫秒，`artifacts` 数保存的文件，`failures` 数连续发送错误，`silence` 数连续没有产出的 ask。守卫结束任务时是 `paused`，永远不是 `failed`——暂停的意思是「回头再来」，同一条命令重跑就从 journal 接上。
 
-### Resuming a work
+### 写一个适配器
 
-The resume cursor is derived from the journal, not recomputed from the recipe. Each
-journal row records its stage, item, repetition round and retry slot, so a crash
-mid-`repeat` resumes at the next round instead of skipping ahead, and a crash inside a
-retry budget spends the remaining retry instead of restarting the round. Retries are
-budgeted per repetition: `repeat: 3, retry: 1` means three chapters, each allowed one
-retry.
-
----
-
-## How do I add another site?
-
-An adapter is four methods. It runs inside the page, so it inherits the session and may call the site's private endpoints.
+适配器只有四个方法，它跑在页面里，所以能继承登录态、能调站点私有接口。
 
 ```js
 {
   probe()                // -> { ok, site, conversationId, url, title }
-  send(text)             // -> { ok }        put text in the composer and submit
+  send(text)             // -> { ok }        把文本放进输入框并提交
   status({ sinceId })    // -> { phase: "idle" | "running" | "stalled", lastMessageId, tail, ... }
   harvest({ messageId }) // -> { text, blocks, artifacts: [{ id, name, mime, bytes, messageId, source }] }
-                         // a bare artifact array is still accepted for compatibility
 }
 ```
 
-Two rules that are not obvious:
+两条不显然的规则：
 
-1. **`status` must be authoritative.** Reading "is it typing?" off the DOM produces double-submits, because sites flicker to idle between the thinking phase and the writing phase. Prefer the site's own message status.
-2. **`harvest` must return bytes, not links.** Signed download URLs expire and are single-use; fetch them inside the adapter while the session is fresh.
+1. **`status` 必须是权威的。** 靠观察 DOM「它是不是在打字」会导致重复提交，因为站点在「思考中」和「写作中」之间会闪一下 idle。优先读站点自己的消息状态。
+2. **`harvest` 必须返回字节，不是链接。** 签名下载 URL 会过期、只能取一次，要在适配器里趁着会话新鲜就抓下来。
 
-`core/adapters/chatgpt.js` is a full worked example, including why it uses the private conversation API instead of the DOM. See [`docs/writing-an-adapter.md`](docs/writing-an-adapter.md) for the long version.
+`core/adapters/chatgpt.js` 是完整范例，包括为什么它用私有会话接口而不是 DOM。更细的说明见 [`docs/writing-an-adapter.md`](docs/writing-an-adapter.md)。
 
-## Repository layout
+### 仓库结构
 
 ```
 core/
-  protocol.js        adapter contract + normalization
-  engine.js          the loop — the only file that knows the order of things
-  journal.js         append-only ask history + full replies (Node)
-  session.js         idempotent ask() / replayable clock, injected by front-ends
-  work.js            staged runs: source → prompt → check → retry, resumable
-  sources.js         single / list / csv / jsonl / dynamic expansion
-  checks.js          ok / retry / pause / abort verdicts
-  guards.js          asks / duration / artifacts / failures / silence budgets
-  stops.js           stop conditions as pure predicates
-  manifest.js        crash-safe run state (Node)
-  sinks.js           browser sinks (download, memory)
-  sinks-node.js      Node sink (filesystem, atomic, collision-safe)
-  adapters/
-    chatgpt.js       the only site-specific code
-  recipes/index.js   built-in recipes, built-in works + resolvers
-cli/                 Node front-end + extension-bridge transport
-gui/                 local web front-end
-  server.mjs             HTTP + SSE, journal and work wiring
-  public/index.html      three-pane shell
-  public/app.js          timeline, detail pane, run form
-  public/app.css         light theme
-userscript/          browser front-end + floating HUD
-scripts/
-  build-userscript.mjs   inlines the shared core into dist/loopcrop.user.js
-dist/                built userscript (committed so users can install without a build)
+  protocol.js        adapter 契约 + 归一化
+  engine.js          循环本体——唯一知道次序的文件
+  journal.js         只追加的 ask 历史 + 完整回复（Node）
+  session.js         幂等 ask() / 可重放时钟，由前端注入
+  work.js            分阶段任务：source → prompt → check → retry，可续跑
+  sources.js         single / list / csv / jsonl / dynamic 展开
+  checks.js          ok / retry / pause / abort 判定
+  guards.js          asks / duration / artifacts / failures / silence 预算
+  stops.js           停止条件（纯谓词）
+  manifest.js        崩溃安全的运行状态（Node）
+  sinks.js           浏览器 sink（下载、内存）
+  sinks-node.js      Node sink（文件系统、原子写、防重名）
+  adapters/chatgpt.js  唯一跟站点相关的代码
+  recipes/index.js   内置配方、内置 work 和解析器
+cli/                 Node 前端 + 扩展桥传输层
+gui/                 本地 Web 前端
+userscript/          浏览器前端 + 浮动面板
+scripts/             把共享内核内联成 dist/loopcrop.user.js
+dist/                构建好的油猴脚本（已提交，装的时候不用构建）
 docs/
-  writing-an-adapter.md  the long version of adding a site
-  images/                GUI screenshots used by the READMEs
+  writing-an-adapter.md  加站点适配器的长版本
+docs/images/         README 里用的 GUI 截图
 ```
 
-`llms.txt` sits at the repo root: a compact, plain-language description of what the
-project does and does not do, aimed at assistants and crawlers that summarise repositories
-without rendering the README.
+仓库根还有一份 `llms.txt`：一段紧凑的纯语言说明，写清这个项目做什么、不做什么，
+给那些不渲染 README 就直接摘要仓库的助手和爬虫看。
 
-`work.js`, `sources.js`, `checks.js` and `guards.js` are deliberately **not** in the
-userscript bundle: the browser build only carries the recipe loop, because a staged
-work needs a filesystem-backed journal to resume from.
+`work.js`、`sources.js`、`checks.js`、`guards.js` **故意不进油猴包**：浏览器版只带配方循环，因为分阶段任务需要文件系统 journal 才能续跑。
 
-The build step is a ~90-line dependency-free ESM inliner rather than a bundler, because the module graph is ten files and a lockfile for that is silly.
+构建步骤是一个九十来行、零依赖的 ESM 内联器，不是打包器——模块图就十个文件，为这个装个 lockfile 太离谱。
 
-## Verification
+### 测试
 
-`npm test` runs 62 unit tests with fake adapters, journals and a fake transport — fast,
-and they pin the parts that are easy to get subtly wrong: turn accounting, dedupe,
-atomic manifest writes, base64 byte handling, stop conditions, journal persistence,
-idempotent replay, source expansion, check verdicts, guard budgets, and the work resume
-cursor. The 100-ask crash test aborts mid-run, reopens the journal, finishes the run and
-asserts every prompt was sent exactly once; a lost manifest is rebuilt from journal
-records without re-saving existing files. Two work tests do the same for staged runs: a
-crash between rounds resumes at the next round rather than skipping ahead, and a crash
-inside a retry budget spends the remaining retry instead of restarting the round.
+`npm test` 跑 62 个单测，全部用假适配器、假 journal、假传输层，所以几秒钟跑完，且只钉那些「很容易悄悄写错」的地方：轮次记账、去重、manifest 原子写、base64 字节处理、停止条件、journal 持久化、幂等重放、来源展开、检查判定、守卫预算、work 恢复游标。
 
-Three of those tests cover the GUI without a browser: every class the client script
-creates must have a CSS rule, every element id it reaches for must exist in the markup,
-and no journal body may reach `innerHTML` unescaped. That last one matters because the
-reply text comes from a remote model — treating it as markup would make the detail pane
-an injection sink.
+那个 100 次 ask 的崩溃测试会中途中断、重开 journal、跑完，然后断言每个提示词**恰好发送一次**；manifest 丢失时会从 journal 记录重建，不会重复保存已有文件。两个 work 测试做同样的事：轮与轮之间崩了从下一轮接上而不是跳过，重试预算中间崩了花掉剩余重试而不是重开一轮。
 
-The live smoke check lives in `live/`, outside the test runner's discovery glob,
-because it spends real quota against a real browser and must never run in CI.
+其中三个测试覆盖 GUI 而不开浏览器：客户端用到的每个 class 必须有对应 CSS 规则，它取的每个元素 id 必须在 HTML 里存在，任何 journal 正文都不得未经转义进 `innerHTML`。最后一条重要，因为回复正文来自远端模型——当成 markup 就等于开了注入口。
 
-Two things unit tests structurally cannot prove, both of which bit during
-development:
+真实冒烟测试在 `live/` 下，故意放在测试发现范围之外，因为它花真配额、必须永远不进 CI。
 
-1. **Does the prompt survive the trip into the page?** The first CLI build called
-   `call('send', { text })` against a `send(text)` signature. The page received `{}`,
-   typed the literal string `[object Object]` into the composer, and ChatGPT
-   politely asked what was meant. `send()` still returned `{ok: true}`, so the loop
-   reported success while sending garbage. `test/cli-adapter.test.mjs` now asserts the
-   prompt arrives positionally and unchanged — reintroducing the bug fails two tests.
-2. **Does a real harvested file contain the real bytes?** `npm run test:live` sends
-   one trivial prompt to a live tab, reads the conversation back through the site's
-   own API, and compares the user message character-for-character. It costs a few
-   seconds of quota.
+有两个单测在结构上证明不了的东西，开发时都踩过：
 
-The send path also verifies the composer actually drained after clicking, because a
-click that misses leaves the text in place — and retrying then sends it twice.
+1. **提示词真的活着进了页面吗？** 最早的 CLI 实现对着 `send(text)` 签名调 `call('send', { text })`。页面收到 `{}`，把字面量 `[object Object]` 打进了输入框，ChatGPT 还很礼貌地问这是什么意思。而 `send()` 照样返回 `{ok: true}`——循环报告成功，实际发的是垃圾。现在 `test/cli-adapter.test.mjs` 断言提示词按位置、原样到达；把 bug 改回去会让两个测试挂掉。
+2. **真收下来的文件里是真字节吗？** `npm run test:live` 往真实标签页发一句极短的提示词，再通过站点自己的接口把对话读回来，逐字符比对。花几秒配额。
 
-## License
+发送路径还会验证点击之后输入框真的被清空了——点偏了文字还留在那儿，重试就会发两遍。
+
+</details>
+
+## 常见问题
+
+**要 API key 吗？**
+不要。它驱动你已登录的网页版，用的就是你的订阅。这也是它能用到项目上下文、文件沙箱、联网这些网页版专属能力的原因。
+
+**会封号吗？**
+真实的风险通常不是封号，是频率限制。你能做的：把 `pacing.between` 调大、用 `guards` 设上限、被限流时让它 `paused` 而不是硬撞。注意自动操作网页确实违反 OpenAI 的使用条款，这个风险由你判断。
+
+**支持 Claude / Gemini / DeepSeek 吗？**
+架构上是插件式的，适配器只有四个方法。但这四个方法要针对每个站点写一遍（`probe` / `send` / `status` / `harvest`），目前仓库里只有 ChatGPT 的实现。欢迎 PR。
+
+**为什么我的油猴脚本收不到文件？**
+第一次运行要让浏览器允许「本站点多次下载」，在地址栏左侧的图标里改。另外油猴版受下载管理器限制，路径由浏览器定，要精确路径请用 CLI。
+
+**跑一半电脑睡了怎么办？**
+重跑同一条命令。journal 记录了每一轮的完整结果，已完成的重放，没做完的才发出去。
+
+**能并发跑多个吗？**
+功能上可以（不同输出目录、不同对话），但同一个账号并发只会互相抢配额，收益很小。跨账号或跨站点才有意义。
+
+**journal 会不会变得很大？**
+会——它存完整回复。一次 60 万字的跑批，journal 就是 60 万字。这是有意的交换：换来「崩溃后不重发」。想清掉就从某一轮重做（会把后面截断）。
+
+## 贡献
+
+适配器、预设、文档都欢迎。改核心之前先跑 `npm test`，62 个测试应该全绿（含 live 之外的）。新增适配器请附一个 `live/` 下的真实冒烟脚本，别只交单测。
+
+<a href="https://github.com/C0llap5ar/loopcrop/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=C0llap5ar/loopcrop&max=100&columns=12" alt="contributors" />
+</a>
+
+## 许可
 
 MIT

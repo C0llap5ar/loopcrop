@@ -74,11 +74,11 @@ Rerunning the same command is the resume mechanism — completed asks replay fro
 ## Files
 
 - [README.md](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/README.md): full
-  English documentation — recipe shape, stage fields, source forms, check verdicts, guard
-  budgets, adapter contract, repository layout, test strategy, and stated limitations.
-- [README.zh-CN.md](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/README.zh-CN.md):
-  the same documentation in Simplified Chinese, organised around the questions people
-  actually search for.
+  documentation, in Simplified Chinese — recipe shape, stage fields, source forms, check
+  verdicts, guard budgets, adapter contract, repository layout, test strategy, and stated
+  limitations. This is the default README GitHub renders.
+- [README.en.md](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/README.en.md):
+  the same documentation in English.
 - [docs/writing-an-adapter.md](https://raw.githubusercontent.com/C0llap5ar/loopcrop/main/docs/writing-an-adapter.md):
   how to add a site. Four methods, two non-obvious rules about authoritative status and
   byte-level harvesting.
