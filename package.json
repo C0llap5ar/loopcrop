@@ -1,6 +1,6 @@
 {
   "name": "loopcrop",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Drive any AI chat web UI in a loop from the tab you are already signed into: send a prompt, wait for the turn to finish, harvest the files it produced, repeat. Crash-safe: a restarted run replays completed asks from a local journal instead of re-sending them.",
   "type": "module",
   "license": "MIT",
