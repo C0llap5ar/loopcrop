@@ -1,5 +1,7 @@
 # loopcrop
 
+[![npm version](https://badge.fury.io/js/loopcrop.svg)](https://www.npmjs.com/package/loopcrop) [![CI](https://github.com/C0llap5ar/loopcrop/actions/workflows/ci.yml/badge.svg)](https://github.com/C0llap5ar/loopcrop/actions/workflows/ci.yml) [![license](https://img.shields.io/npm/l/loopcrop.svg)](LICENSE)
+
 **Turn any AI chat web UI into a repeatable prompt loop.**
 
 Send a prompt → wait for the turn to actually finish → harvest the files it produced → send the next prompt. Repeat until a stop condition fires.

@@ -1,0 +1,40 @@
+name: Publish
+
+# Releases go out from CI using OIDC trusted publishing, so no npm token and no
+# interactive one-time password is involved. Pushing a tag is the only trigger:
+# nothing publishes on a normal commit.
+#
+# One-time setup on npmjs.com: package loopcrop → Settings → Trusted publisher
+# → GitHub Actions, repository C0llap5ar/loopcrop, workflow publish.yml.
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for OIDC; this is what replaces the token
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json $version"
+            exit 1
+          fi
+      - run: node --test
+      - run: node scripts/build-userscript.mjs
+      - run: git diff --exit-code dist/loopcrop.user.js
+      # npm 11.5.1+ is what implements trusted publishing; older clients fall
+      # back to token auth and fail with an opaque 404.
+      - run: npm install -g npm@latest
+      - run: npm publish --access public
