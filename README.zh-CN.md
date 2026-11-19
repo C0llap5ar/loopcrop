@@ -344,7 +344,7 @@ docs/images/         README 里用的 GUI 截图
 
 ### 测试
 
-`npm test` 跑 59 个单测，全部用假适配器、假 journal、假传输层，所以几秒钟跑完，且只钉那些「很容易悄悄写错」的地方：轮次记账、去重、manifest 原子写、base64 字节处理、停止条件、journal 持久化、幂等重放、来源展开、检查判定、守卫预算、work 恢复游标。
+`npm test` 跑 62 个单测，全部用假适配器、假 journal、假传输层，所以几秒钟跑完，且只钉那些「很容易悄悄写错」的地方：轮次记账、去重、manifest 原子写、base64 字节处理、停止条件、journal 持久化、幂等重放、来源展开、检查判定、守卫预算、work 恢复游标。
 
 那个 100 次 ask 的崩溃测试会中途中断、重开 journal、跑完，然后断言每个提示词**恰好发送一次**；manifest 丢失时会从 journal 记录重建，不会重复保存已有文件。两个 work 测试做同样的事：轮与轮之间崩了从下一轮接上而不是跳过，重试预算中间崩了花掉剩余重试而不是重开一轮。
 
@@ -386,7 +386,7 @@ docs/images/         README 里用的 GUI 截图
 
 ## 贡献
 
-适配器、预设、文档都欢迎。改核心之前先跑 `npm test`，59 个测试应该全绿（含 live 之外的）。新增适配器请附一个 `live/` 下的真实冒烟脚本，别只交单测。
+适配器、预设、文档都欢迎。改核心之前先跑 `npm test`，62 个测试应该全绿（含 live 之外的）。新增适配器请附一个 `live/` 下的真实冒烟脚本，别只交单测。
 
 <a href="https://github.com/C0llap5ar/loopcrop/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=C0llap5ar/loopcrop&max=100&columns=12" alt="contributors" />

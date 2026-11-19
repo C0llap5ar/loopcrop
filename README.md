@@ -418,7 +418,7 @@ The build step is a ~90-line dependency-free ESM inliner rather than a bundler, 
 
 ## Verification
 
-`npm test` runs 59 unit tests with fake adapters, journals and a fake transport — fast,
+`npm test` runs 62 unit tests with fake adapters, journals and a fake transport — fast,
 and they pin the parts that are easy to get subtly wrong: turn accounting, dedupe,
 atomic manifest writes, base64 byte handling, stop conditions, journal persistence,
 idempotent replay, source expansion, check verdicts, guard budgets, and the work resume

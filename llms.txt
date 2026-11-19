@@ -97,7 +97,7 @@ Rerunning the same command is the resume mechanism — completed asks replay fro
 
 ## Verification claims
 
-`npm test` runs 59 unit tests against fake adapters, journals and transports. The load-bearing
+`npm test` runs 62 unit tests against fake adapters, journals and transports. The load-bearing
 one aborts a 100-ask run midway, reopens the journal, finishes, and asserts every prompt was
 sent exactly once. Two further tests prove a staged run resumes at the next round after a
 crash between rounds, and spends a remaining retry instead of restarting the round after a

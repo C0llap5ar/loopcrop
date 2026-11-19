@@ -17,6 +17,7 @@ const ROOT = resolve(import.meta.dirname, '..');
 const ENTRY = join(ROOT, 'userscript', 'entry.js');
 const OUT = join(ROOT, 'dist', 'loopcrop.user.js');
 const HEADER = join(ROOT, 'userscript', 'meta.js');
+const PKG = join(ROOT, 'package.json');
 
 const IMPORT_RE = /^\s*import\s+(?:[\w*{}\s,]+\s+from\s+)?['"](\.[^'"]+)['"]\s*;?\s*$/gm;
 const EXPORT_RE = /^\s*export\s+(default\s+)?/gm;
@@ -65,9 +66,24 @@ function strip(src, file) {
   return `// ── ${relative(ROOT, file).replace(/\\/g, '/')} ${'─'.repeat(Math.max(0, 44 - relative(ROOT, file).length))}\n${body.trim()}\n`;
 }
 
+/**
+ * Tampermonkey decides whether to offer an update by comparing the `@version`
+ * metadata block against the installed copy, so a stale literal there means
+ * installed users never see a new build. The version lives in package.json and
+ * nowhere else; here we stamp it in at build time.
+ */
+function stampVersion(meta, version) {
+  const line = /^(\/\/\s*@version\s+).*$/m;
+  if (!line.test(meta)) {
+    throw new Error(`userscript/meta.js has no @version line to stamp with ${version}`);
+  }
+  return meta.replace(line, `$1${version}`);
+}
+
 const modules = await collect(ENTRY);
 const order = topo(modules);
-const meta = await readFile(HEADER, 'utf8');
+const pkg = JSON.parse(await readFile(PKG, 'utf8'));
+const meta = stampVersion(await readFile(HEADER, 'utf8'), pkg.version);
 
 const body = order.map((f) => strip(modules.get(f), f)).join('\n');
 
@@ -91,5 +107,5 @@ await mkdir(dirname(OUT), { recursive: true });
 await writeFile(OUT, bundle, 'utf8');
 
 const kb = (Buffer.byteLength(bundle) / 1024).toFixed(1);
-console.log(`built ${relative(ROOT, OUT).replace(/\\/g, '/')} · ${order.length} modules · ${kb} kB`);
+console.log(`built ${relative(ROOT, OUT).replace(/\\/g, '/')} · ${order.length} modules · ${kb} kB · v${pkg.version}`);
 for (const f of order) console.log(`  ${relative(ROOT, f).replace(/\\/g, '/')}`);
